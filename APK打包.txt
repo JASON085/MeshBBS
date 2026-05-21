@@ -1,0 +1,14 @@
+打包流程（第一次約 5-10 分鐘）
+
+雙擊 打包Android APK.bat
+  │
+  ├─ 自動找 Android Studio JDK
+  ├─ 自動找 Android SDK
+  ├─ 下載 Gradle 8.9（第一次 ~130MB，之後快取）
+  ├─ 編譯 Debug APK
+  ├─ 若手機連 USB 且開啟偵錯模式 → 自動安裝到手機
+  └─ 詢問是否開啟 APK 所在資料夾
+APK 輸出位置：E:\My work\Meshtastic BBS-ubuntu\android\MeshtasticBBS\app\build\outputs\apk\debug\
+前置需求（只需設定一次）
+安裝 Android Studio
+SDK Manager 安裝 Android 14.0 (API 34) 和 Build-Tools 34.0.0

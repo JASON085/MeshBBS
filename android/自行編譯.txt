@@ -1,0 +1,3 @@
+# 在 PowerShell 中執行（右鍵 → 以系統管理員執行）
+cd "c:\My work\Meshtastic BBS-ubuntu\android\MeshtasticBBS"
+powershell -ExecutionPolicy Bypass -File .\build_apk.ps1

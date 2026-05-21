@@ -1,0 +1,5 @@
+# Copy to signing.properties on your local machine only.
+storeFile=signing/meshbbs-release.jks
+storePassword=CHANGE_ME
+keyAlias=meshbbs-release
+keyPassword=CHANGE_ME

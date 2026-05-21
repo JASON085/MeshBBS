@@ -1,0 +1,33 @@
+使用方式
+
+# 安裝依賴
+pip install meshtastic colorama
+
+# 自動偵測 COM port
+python mesh_bbs_client.py
+
+# 指定 COM port
+python mesh_bbs_client.py --port COM3
+
+# 直接指定伺服器節點 ID（跳過選擇步驟）
+python mesh_bbs_client.py --port COM3 --server !abc12345
+啟動流程
+
+1. 自動偵測 COM port（找不到才手動輸入）
+2. 掃描 Mesh 節點，選擇 BBS 伺服器（或手動輸入 node ID）
+3. 輸入帳號登入
+4. 看板選單
+操作按鍵（與網頁版相同）
+按鍵	功能
+↑  ↓	上下選擇
+→  Enter	進入看板  讀文
+←  Esc	返回上一層
+[  ]	上一頁  下一頁
+N	發新文
+R	回覆文章
+C	進入聊天室
+Q	離開
+注意事項
+外部 PC 的 Meshtastic 裝置須在 BBS 伺服器裝置的 LoRa 覆蓋範圍內
+取得伺服器的 node ID（在 GUI 管理介面或 Meshtastic App 可查），格式為 !xxxxxxxx
+LoRa 回應有延遲（約 1~3 秒），等待逾時預設 18 秒

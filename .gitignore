@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+.env
+.env.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+backup/
+
+# Build artifacts
+build/
+dist/
+
+# IDE / local tooling
+.vscode/
+.idea/
+.claude/
+.gradle/
+.kotlin/
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Android / Gradle
+android/MeshtasticBBS/.gradle/
+android/MeshtasticBBS/local.properties
+android/MeshtasticBBS/build_output.log
+android/MeshtasticBBS/apk_archive/
+android/MeshtasticBBS/**/build/
+
+# Android signing secrets
+android/MeshtasticBBS/signing/*.jks
+android/MeshtasticBBS/signing/*.keystore
+android/MeshtasticBBS/signing/*.properties
+!android/MeshtasticBBS/signing/signing.properties.example

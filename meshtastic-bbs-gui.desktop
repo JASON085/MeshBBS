@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Meshtastic BBS 控制台
+Name[zh_TW]=Meshtastic BBS 控制台
+Comment=Meshtastic PTT-BBS 伺服器管理介面
+Comment[zh_TW]=Meshtastic PTT-BBS 伺服器管理介面
+Exec=python3 /home/pi/meshtastic-bbs/bbs_gui.py
+Icon=network-wireless
+Terminal=false
+Categories=Network;HamRadio;
+StartupNotify=true

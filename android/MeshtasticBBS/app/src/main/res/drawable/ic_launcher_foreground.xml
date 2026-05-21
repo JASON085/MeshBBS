@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MeshBBS launcher icon foreground (108x108dp, safe zone 72x72dp centred).
+  Design: bold "M" glyph + LoRa arcs (top-right) + 6 mesh-node dots (paths only).
+  No <circle> — Android VectorDrawable only accepts <path>, <group>, <clip-path>.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- ── LoRa concentric arcs (top-right quadrant of centre) ── -->
+    <path
+        android:pathData="M63,40 A13,13 0 0,1 54,27"
+        android:strokeColor="#CC4B8FFF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"/>
+    <path
+        android:pathData="M68.5,45.5 A20.5,20.5 0 0,1 54,25"
+        android:strokeColor="#994B8FFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"/>
+    <path
+        android:pathData="M74,51 A28,28 0 0,1 54,23"
+        android:strokeColor="#664B8FFF"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"/>
+
+    <!-- ── Bold "M" letterform ── -->
+    <path
+        android:pathData="M37,66 L37,42 L54,58 L71,42 L71,66"
+        android:strokeColor="#FF4B8FFF"
+        android:strokeWidth="5.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"/>
+
+    <!-- ── "BBS" label ── -->
+    <path
+        android:pathData="M42,72 L42,82
+                          M42,72 L46,72 Q49,72 49,75 Q49,77 46,77 L42,77
+                          M42,77 L47,77 Q51,77 51,79.5 Q51,82 47,82 L42,82"
+        android:strokeColor="#CC8B5CF6"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"/>
+    <path
+        android:pathData="M53,72 L53,82
+                          M53,72 L57,72 Q60,72 60,75 Q60,77 57,77 L53,77
+                          M53,77 L58,77 Q62,77 62,79.5 Q62,82 58,82 L53,82"
+        android:strokeColor="#CC8B5CF6"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"/>
+    <path
+        android:pathData="M68,73.5 Q65,71.5 63,73.5 Q61,75.5 63.5,77 Q66,78.5 66,80.5 Q66,83 63,82.5"
+        android:strokeColor="#CC8B5CF6"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"/>
+
+    <!-- ── 6 mesh-node dots (circles as arc paths) ── -->
+    <!-- top:    cx=54, cy=20, r=2.8 -->
+    <path
+        android:pathData="M51.2,20 A2.8,2.8 0 1,0 56.8,20 A2.8,2.8 0 1,0 51.2,20 Z"
+        android:fillColor="#FF4B8FFF"/>
+    <!-- top-right: cx=78, cy=33, r=2.2 -->
+    <path
+        android:pathData="M75.8,33 A2.2,2.2 0 1,0 80.2,33 A2.2,2.2 0 1,0 75.8,33 Z"
+        android:fillColor="#DD4B8FFF"/>
+    <!-- bottom-right: cx=82, cy=61, r=2.2 -->
+    <path
+        android:pathData="M79.8,61 A2.2,2.2 0 1,0 84.2,61 A2.2,2.2 0 1,0 79.8,61 Z"
+        android:fillColor="#BB4B8FFF"/>
+    <!-- bottom: cx=54, cy=88, r=2.8 -->
+    <path
+        android:pathData="M51.2,88 A2.8,2.8 0 1,0 56.8,88 A2.8,2.8 0 1,0 51.2,88 Z"
+        android:fillColor="#FF8B5CF6"/>
+    <!-- bottom-left: cx=26, cy=61, r=2.2 -->
+    <path
+        android:pathData="M23.8,61 A2.2,2.2 0 1,0 28.2,61 A2.2,2.2 0 1,0 23.8,61 Z"
+        android:fillColor="#BB4B8FFF"/>
+    <!-- top-left: cx=30, cy=33, r=2.2 -->
+    <path
+        android:pathData="M27.8,33 A2.2,2.2 0 1,0 32.2,33 A2.2,2.2 0 1,0 27.8,33 Z"
+        android:fillColor="#DD4B8FFF"/>
+
+    <!-- ── Mesh connecting lines ── -->
+    <path
+        android:pathData="M54,20 L78,33 M78,33 L82,61 M82,61 L54,88 M54,88 L26,61 M26,61 L30,33 M30,33 L54,20"
+        android:strokeColor="#334B8FFF"
+        android:strokeWidth="0.8"
+        android:fillColor="#00000000"/>
+
+</vector>

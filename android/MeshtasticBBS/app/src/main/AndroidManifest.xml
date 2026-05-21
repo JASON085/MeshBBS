@@ -1,0 +1,69 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Meshtastic plugin API service permission -->
+    <uses-permission android:name="com.geeksville.mesh.MESHSERVICE" />
+    <!-- Bluetooth permissions ??required so Meshtastic's service accepts send() from our app -->
+    <!-- Android ??11 (API 30) ??normal permissions, no runtime request needed -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <!-- Android 12+ (API 31+) ??dangerous permissions, must be granted at runtime -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+
+    <!-- Required to query/bind to the Meshtastic Android app service -->
+    <queries>
+        <package android:name="com.geeksville.mesh" />
+        <intent>
+            <action android:name="com.geeksville.mesh.Service" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="true"
+        android:icon="${appIcon}"
+        android:roundIcon="${appRoundIcon}"
+        android:label="${appLabel}"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MeshtasticBBS">
+
+        <!-- Static receiver for directed TEXT_MESSAGE_APP broadcasts from Meshtastic 2.7.x.
+             Only TEXT_MESSAGE_APP is registered ??adding NODEINFO_APP/POSITION_APP for 200+
+             nodes caused rapid handler invocations that triggered BLE disconnect. -->
+        <receiver
+            android:name=".data.MeshPacketReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.geeksville.mesh.RECEIVED.TEXT_MESSAGE_APP" />
+                <action android:name="com.geeksville.mesh.RECEIVED.text" />
+                <action android:name="com.geeksville.mesh.RECEIVED.PRIVATE_APP" />
+                <action android:name="com.geeksville.mesh.RECEIVED.private" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".server.AndroidServerService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>
+
+

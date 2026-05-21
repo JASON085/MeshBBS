@@ -1,0 +1,1841 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>Meshtastic BBS</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Mono:wght@400;700&display=swap');
+
+/* ── PTT terminal color palette ────────────────────── */
+:root {
+  --bg:        #000000;
+  --fg:        #c0c0c0;
+  --bright:    #ffffff;
+  --black:     #000000;
+  --red:       #cc3333;
+  --red2:      #ff4444;
+  --green:     #00cc00;
+  --green2:    #33ff33;
+  --yellow:    #cccc00;
+  --yellow2:   #ffff33;
+  --blue:      #3333cc;
+  --blue2:     #6699ff;
+  --magenta:   #cc33cc;
+  --cyan:      #00cccc;
+  --cyan2:     #33ffff;
+  --dim:       #555555;
+  --dim2:      #777777;
+  --sel-bg:    #003366;
+  --sel-fg:    #ffffff;
+  --bar-bg:    #000033;
+  --title-bg:  #000066;
+  --sep:       #00aa00;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+html, body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Noto Sans Mono', 'Courier New', 'MingLiU', monospace;
+  font-size: 15px;
+  line-height: 1.35;
+  height: 100vh;
+  overflow: hidden;
+  cursor: default;
+  user-select: none;
+  -webkit-font-smoothing: none;
+}
+
+#terminal {
+  width: 100%;
+  height: 100vh;
+  max-width: 960px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Status bar (top) ─────────────────────────────── */
+#statusbar {
+  background: var(--bar-bg);
+  color: var(--fg);
+  padding: 1px 4px;
+  font-size: 13px;
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid #003399;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.sb-left  { color: var(--cyan2); font-weight: 700; }
+.sb-mid   { color: var(--fg); }
+.sb-right { color: var(--yellow); }
+.sb-sep   { color: var(--dim); margin: 0 6px; }
+.sb-val   { color: var(--bright); }
+.sb-mesh  { color: var(--dim); margin-left: 8px; }
+.sb-mesh.on { color: var(--green2); }
+
+/* ── Main content area ────────────────────────────── */
+#main {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.view { display: none; flex-direction: column; height: 100%; }
+.view.active { display: flex; }
+
+/* scrollable content */
+.ptt-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.ptt-scroll::-webkit-scrollbar { width: 5px; }
+.ptt-scroll::-webkit-scrollbar-track { background: #0a0a0a; }
+.ptt-scroll::-webkit-scrollbar-thumb { background: #333; }
+
+/* ── Title bar (inside view) ──────────────────────── */
+.view-title {
+  background: var(--title-bg);
+  color: var(--cyan2);
+  padding: 1px 6px;
+  font-size: 13px;
+  border-bottom: 1px solid #003399;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  white-space: nowrap;
+}
+.view-title .vt-left  { color: var(--cyan2); }
+.view-title .vt-right { color: var(--yellow); font-size: 12px; }
+
+/* ── Section header line ──────────────────────────── */
+.ptt-hdr {
+  background: #001100;
+  color: var(--dim2);
+  padding: 0 6px;
+  font-size: 12px;
+  border-bottom: 1px solid #001a00;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  min-height: 18px;
+}
+
+/* ── Board List ───────────────────────────────────── */
+.board-row {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  min-height: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 14px;
+  border-bottom: 1px solid #0a0a0a;
+}
+.board-row:hover, .board-row.cursor {
+  background: var(--sel-bg);
+  color: var(--sel-fg);
+}
+.board-row.cursor .b-name { color: var(--cyan2); }
+.b-num   { color: var(--dim2); width: 32px; text-align: right; flex-shrink: 0; padding-right: 6px; }
+.b-name  { color: var(--cyan); font-weight: 700; width: 120px; flex-shrink: 0; }
+.b-desc  { color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.b-mod   { color: var(--yellow2); width: 80px; text-align: right; flex-shrink: 0; font-size: 12px; }
+.b-cnt   { color: var(--green); width: 56px; text-align: right; flex-shrink: 0; font-size: 13px; }
+
+/* ── Post List ────────────────────────────────────── */
+.post-row {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  min-height: 20px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 14px;
+  border-bottom: 1px solid #080808;
+}
+.post-row:hover, .post-row.cursor {
+  background: var(--sel-bg);
+}
+.p-num    { color: var(--dim2); width: 44px; text-align: right; flex-shrink: 0; padding-right: 4px; font-size: 13px; }
+.p-push   { width: 28px; text-align: center; flex-shrink: 0; font-size: 13px; font-weight: 700; }
+.p-push.p0   { color: var(--dim); }
+.p-push.p1   { color: var(--fg); }
+.p-push.p5   { color: var(--yellow); }
+.p-push.p10  { color: #ff8800; }
+.p-push.p20  { color: var(--red2); }
+.p-push.boom   { color: var(--red2); }
+.p-push.pushed { text-decoration: underline; }
+.p-board { color: var(--cyan); font-size: 12px; }
+.p-title  { flex: 1; color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+.p-title.replied { color: var(--yellow2); }
+.p-author { color: var(--green2); width: 88px; text-align: right; flex-shrink: 0; font-size: 12px; }
+.p-date   { color: var(--dim2); width: 44px; text-align: right; flex-shrink: 0; font-size: 12px; margin-left: 4px; }
+
+/* ── Article ──────────────────────────────────────── */
+#art-meta {
+  background: #001a00;
+  padding: 3px 6px;
+  font-size: 13px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #004400;
+}
+.art-row { display: flex; gap: 0; margin-bottom: 1px; }
+.art-key { color: var(--cyan); width: 46px; flex-shrink: 0; }
+.art-val { color: var(--fg); }
+.art-val.author { color: var(--green2); font-weight: 700; }
+.art-val.title  { color: var(--yellow2); }
+.art-val.board  { color: var(--cyan2); }
+
+#art-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+#art-body::-webkit-scrollbar { width: 5px; }
+#art-body::-webkit-scrollbar-thumb { background: #333; }
+
+.art-sep {
+  color: var(--sep);
+  padding: 2px 8px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.reply-block {
+  display: flex;
+  gap: 0;
+  padding: 1px 8px;
+  font-size: 13px;
+  border-top: 1px solid #111;
+}
+.r-type   { flex-shrink: 0; width: 16px; font-weight: 700; }
+.r-type.push { color: var(--green2); }
+.r-type.arrow { color: var(--cyan); }
+.r-type.boo  { color: var(--red); }
+.r-author { color: var(--green2); flex-shrink: 0; width: 80px; margin-right: 4px; }
+.r-body   { flex: 1; color: var(--fg); overflow: hidden; }
+.r-date   { color: var(--dim2); flex-shrink: 0; font-size: 11px; margin-left: 8px; }
+
+/* ── Compose ──────────────────────────────────────── */
+#compose-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+}
+.compose-lbl { color: var(--cyan); font-size: 12px; margin-bottom: 3px; }
+.compose-inp {
+  background: #050505;
+  border: none;
+  border-bottom: 1px solid var(--sep);
+  color: var(--green2);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 2px 4px;
+  width: 100%;
+  outline: none;
+  margin-bottom: 8px;
+}
+.compose-ta {
+  background: #050505;
+  border: 1px solid #222;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 6px;
+  width: 100%;
+  flex: 1;
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+}
+.compose-ta:focus { border-color: var(--cyan); }
+.compose-btns { display: flex; gap: 10px; margin-top: 8px; }
+
+/* ── Compose title bar type hints ─────────────────── */
+.ctype-key {
+  color: var(--cyan);
+  font-weight: bold;
+  margin-right: 1px;
+}
+.ctype-sep { color: var(--dim); margin: 0 8px; }
+
+/* title prefix tag */
+#title-row { display: flex; align-items: baseline; gap: 0; }
+#type-prefix {
+  color: var(--yellow);
+  font-size: 14px;
+  white-space: nowrap;
+  padding: 2px 2px 2px 4px;
+  border-bottom: 1px solid var(--sep);
+  margin-bottom: 8px;
+  line-height: 1;
+}
+
+/* ── Search bar ──────────────────────────────────── */
+.search-bar {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  background: #000b00;
+  border-top: 1px solid var(--sep);
+  flex-shrink: 0;
+}
+.search-bar.active { display: flex; }
+.search-lbl { color: var(--cyan); font-size: 13px; white-space: nowrap; flex-shrink: 0; }
+.search-inp {
+  flex: 1;
+  background: #000;
+  border: none;
+  border-bottom: 1px solid var(--sep);
+  color: var(--green2);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 1px 4px;
+  outline: none;
+  caret-color: var(--green2);
+}
+.search-hint { color: var(--dim2); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
+
+/* ── Mesh Chat ────────────────────────────────────── */
+#mesh-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+#mesh-log::-webkit-scrollbar { width: 5px; }
+#mesh-log::-webkit-scrollbar-thumb { background: #333; }
+.mlog-row  { display: flex; gap: 6px; margin-bottom: 2px; }
+.mlog-time { color: var(--dim); flex-shrink: 0; font-size: 12px; width: 56px; }
+.mlog-from { color: var(--green2); flex-shrink: 0; width: 80px; font-weight: 700; }
+.mlog-text { color: var(--fg); }
+.mlog-sys  { color: var(--yellow); font-style: italic; flex: 1; }
+#mesh-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 8px;
+  border-top: 1px solid #222;
+  flex-shrink: 0;
+}
+#mesh-input-row .mi-label { color: var(--cyan2); font-size: 13px; flex-shrink: 0; }
+#mesh-txt {
+  flex: 1;
+  background: #0a0a0a;
+  border: none;
+  border-bottom: 1px solid var(--sep);
+  color: var(--green2);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 2px 4px;
+  outline: none;
+}
+
+/* ── Online users bar ─────────────────────────────── */
+#online-bar {
+  background: #000800;
+  border-top: 1px solid #002200;
+  padding: 2px 6px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.ol-label { color: var(--cyan); margin-right: 8px; }
+.ol-user  { color: var(--green); margin-right: 10px; }
+
+/* ── Bottom menu ──────────────────────────────────── */
+#menu {
+  background: var(--bar-bg);
+  border-top: 1px solid #003399;
+  padding: 2px 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  flex-shrink: 0;
+  min-height: 22px;
+}
+.mk { background: var(--yellow); color: #000; font-weight: 700; padding: 0 3px; font-size: 12px; }
+.md { color: var(--fg); font-size: 12px; }
+.msep { color: var(--dim); font-size: 12px; }
+
+/* ── Login ────────────────────────────────────────── */
+#login {
+  position: fixed; inset: 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+#login.gone { display: none; }
+.lbox {
+  border: 1px solid var(--green);
+  padding: 24px 36px;
+  text-align: center;
+  min-width: 420px;
+  position: relative;
+}
+.lbox::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border: 1px solid #003300;
+  pointer-events: none;
+}
+.l-ascii {
+  color: var(--green);
+  font-size: 20px;
+  letter-spacing: 2px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-bottom: 4px;
+  white-space: pre;
+}
+.l-sub  { color: var(--cyan); font-size: 12px; margin-bottom: 20px; }
+.l-row  { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; justify-content: center; }
+.l-lbl  { color: var(--cyan); width: 70px; text-align: right; font-size: 13px; }
+.l-inp  {
+  background: #000;
+  border: none;
+  border-bottom: 1px solid var(--green);
+  color: var(--green2);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 2px 4px;
+  width: 200px;
+  outline: none;
+  user-select: text;
+  caret-color: var(--green2);
+}
+.l-inp:focus { border-bottom: 2px solid var(--cyan); background: #001100; }
+.l-btn  {
+  background: #002200;
+  border: 1px solid var(--green);
+  color: var(--green2);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 4px 32px;
+  cursor: pointer;
+  margin-top: 8px;
+}
+.l-btn:hover { background: #004400; color: var(--cyan2); }
+.l-btn-sec {
+  background: transparent;
+  border: 1px solid var(--dim);
+  color: var(--dim2);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 3px 20px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.l-btn-sec:hover { border-color: var(--cyan); color: var(--cyan); }
+.l-msg  { color: var(--dim2); font-size: 12px; margin-top: 8px; min-height: 16px; }
+.l-err  { color: var(--red2); font-size: 12px; margin-top: 8px; min-height: 16px; }
+.l-ok   { color: var(--green2); font-size: 12px; margin-top: 8px; min-height: 16px; }
+.l-link { color: var(--cyan); font-size: 12px; cursor: pointer; text-decoration: underline; margin-top: 10px; display: inline-block; }
+.l-link:hover { color: var(--cyan2); }
+.l-note { color: var(--dim); font-size: 11px; margin-top: 16px; border-top: 1px solid #222; padding-top: 10px; }
+
+/* ── Notification toast ───────────────────────────── */
+#toast {
+  position: fixed;
+  top: 26px; right: 8px;
+  background: #002200;
+  border: 1px solid var(--green);
+  color: var(--green2);
+  font-size: 12px;
+  padding: 3px 12px;
+  display: none;
+  z-index: 888;
+}
+
+/* ── Terminal buttons ─────────────────────────────── */
+.tbtn {
+  background: #001a00;
+  border: 1px solid var(--green);
+  color: var(--green2);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 3px 14px;
+  cursor: pointer;
+}
+.tbtn:hover { background: #003300; color: var(--cyan2); }
+
+/* ── Separator line ───────────────────────────────── */
+.ptt-sep-line {
+  color: var(--sep);
+  padding: 1px 6px;
+  font-size: 12px;
+  user-select: none;
+  flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+
+<!-- Login screen -->
+<div id="login">
+  <div class="lbox">
+    <div class="l-ascii">
+ ███╗   ███╗███████╗███████╗██╗  ██╗
+ ████╗ ████║██╔════╝██╔════╝██║  ██║
+ ██╔████╔██║█████╗  ███████╗███████║
+ ██║╚██╔╝██║██╔══╝  ╚════██║██╔══██║
+ ██║ ╚═╝ ██║███████╗███████║██║  ██║
+ ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝</div>
+    <div class="l-sub">:: Meshtastic LoRa 無線 BBS 討論板系統 ::</div>
+
+    <!-- ── 登入面板 ── -->
+    <div id="l-panel-login">
+      <div class="l-row">
+        <span class="l-lbl">帳　　號</span>
+        <input class="l-inp" id="l-name" maxlength="24" placeholder="請輸入帳號" autocomplete="off">
+      </div>
+      <div class="l-row">
+        <span class="l-lbl">密　　碼</span>
+        <input class="l-inp" id="l-pass" type="password" maxlength="50" placeholder="請輸入密碼" autocomplete="off">
+      </div>
+      <div class="l-row">
+        <span class="l-lbl">伺服器</span>
+        <input class="l-inp" id="l-ws" value="ws://localhost:8765/ws" autocomplete="off">
+      </div>
+      <div style="margin-top:10px;">
+        <button class="l-btn" onclick="doLogin()">登　入</button>
+      </div>
+      <div class="l-err" id="l-msg"></div>
+      <div style="margin-top:10px;">
+        <span class="l-link" onclick="showRegister()">還沒帳號？申請新帳號</span>
+      </div>
+    </div>
+
+    <!-- ── 申請帳號面板 ── -->
+    <div id="l-panel-reg" style="display:none;">
+      <div class="l-row">
+        <span class="l-lbl">帳　　號</span>
+        <input class="l-inp" id="r-name" maxlength="24" placeholder="設定帳號（限英數字）" autocomplete="off">
+      </div>
+      <div class="l-row">
+        <span class="l-lbl">密　　碼</span>
+        <input class="l-inp" id="r-pass" type="password" maxlength="50" placeholder="設定密碼（至少 4 字元）" autocomplete="off">
+      </div>
+      <div class="l-row">
+        <span class="l-lbl">確認密碼</span>
+        <input class="l-inp" id="r-pass2" type="password" maxlength="50" placeholder="再次輸入密碼" autocomplete="off">
+      </div>
+      <div style="margin-top:10px;">
+        <button class="l-btn" onclick="doRegister()">申 請 帳 號</button>
+        <button class="l-btn-sec" onclick="showLogin()" style="margin-left:8px;">返回登入</button>
+      </div>
+      <div class="l-err" id="r-msg"></div>
+    </div>
+
+    <div class="l-note">
+      每人用PC的USB連接Meshtastic裝置，透過LoRa無線電接入BBS伺服器<br>
+      或直接透過瀏覽器連線（需申請帳號）
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- Main terminal -->
+<div id="terminal">
+
+  <!-- Top status bar -->
+  <div id="statusbar">
+    <span class="sb-left">◎ Meshtastic BBS</span>
+    <span class="sb-mid">
+      <span class="sb-sep">│</span>使用者：<span class="sb-val" id="sb-user">未登入</span>
+      <span class="sb-sep">│</span>節點：<span class="sb-val" id="sb-node">-</span>
+      <span class="sb-sep">│</span>位置：<span class="sb-val" id="sb-board">首頁</span>
+    </span>
+    <span>
+      <span class="sb-mesh" id="sb-mesh">Mesh:●</span>
+      <span class="sb-sep">│</span>線上:<span class="sb-val" id="sb-online">0</span>人
+      <span class="sb-sep">│</span><span class="sb-right" id="sb-time">00:00:00</span>
+    </span>
+  </div>
+
+  <div id="main">
+
+    <!-- ── View: Board List ─────────────────────────── -->
+    <div class="view active" id="v-boards">
+      <div class="view-title">
+        <span class="vt-left">Meshtastic BBS  看板列表</span>
+        <span class="vt-right">LoRa 無線討論板系統</span>
+      </div>
+      <div class="ptt-hdr">
+        <span style="width:32px;text-align:right;flex-shrink:0;padding-right:6px">編號</span>
+        <span style="width:120px;flex-shrink:0">看板代碼</span>
+        <span style="flex:1">說明</span>
+        <span style="width:80px;text-align:right;flex-shrink:0">版主</span>
+        <span style="width:56px;text-align:right;flex-shrink:0">文章數</span>
+      </div>
+      <div class="ptt-scroll" id="board-list"></div>
+      <div id="online-bar">
+        <span class="ol-label">◆ 線上使用者：</span>
+        <span id="online-list"></span>
+      </div>
+      <div class="search-bar" id="board-search-bar">
+        <span class="search-lbl" id="board-search-lbl">搜尋看板：</span>
+        <input class="search-inp" id="board-search-inp" maxlength="60" autocomplete="off">
+        <span class="search-hint">Enter 確認　Esc 取消</span>
+      </div>
+      <div id="menu">
+        <span><span class="mk">↑↓</span><span class="md">選擇</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">→</span><span class="md">進入看板</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">S</span><span class="md">搜尋看板</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">/</span><span class="md">搜尋標題</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">A</span><span class="md">搜尋作者</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">M</span><span class="md">Mesh通訊</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">←</span><span class="md">離開</span></span>
+      </div>
+    </div>
+
+    <!-- ── View: Post List ─────────────────────────── -->
+    <div class="view" id="v-posts">
+      <div class="view-title">
+        <span class="vt-left" id="post-title-bar">看板 [?]</span>
+        <span class="vt-right" id="post-page-bar">第1頁</span>
+      </div>
+      <div class="ptt-hdr">
+        <span style="width:44px;text-align:right;flex-shrink:0;padding-right:4px">編號</span>
+        <span style="width:28px;text-align:center;flex-shrink:0">推</span>
+        <span style="flex:1">標題</span>
+        <span style="width:88px;text-align:right;flex-shrink:0">作者</span>
+        <span style="width:44px;text-align:right;flex-shrink:0;margin-left:4px">日期</span>
+      </div>
+      <div class="ptt-scroll" id="post-list"></div>
+      <div class="search-bar" id="post-search-bar">
+        <span class="search-lbl" id="post-search-lbl">搜尋標題：</span>
+        <input class="search-inp" id="post-search-inp" maxlength="60" autocomplete="off">
+        <span class="search-hint">Enter 搜尋　Esc 取消</span>
+      </div>
+      <div id="menu">
+        <span><span class="mk">↑↓</span><span class="md">選擇</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">→</span><span class="md">開啟文章</span></span>
+        <span class="msep">│</span>
+        <span style="cursor:pointer" onclick="composePost()"><span class="mk">P</span><span class="md">發文</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">X</span><span class="md">推薦</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">Y</span><span class="md">回覆</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">/</span><span class="md">搜尋標題</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">A</span><span class="md">搜尋作者</span></span>
+        <span id="mod-post-btns" style="display:none">
+          <span class="msep">│</span>
+          <span style="cursor:pointer" onclick="modEditSelected()"><span class="mk">E</span><span class="md">編輯</span></span>
+          <span class="msep">│</span>
+          <span style="cursor:pointer" onclick="modDeleteSelected()"><span class="mk">D</span><span class="md">刪除</span></span>
+        </span>
+        <span class="msep">│</span>
+        <span><span class="mk">[ ]</span><span class="md">換頁</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">←</span><span class="md">返回</span></span>
+      </div>
+    </div>
+
+    <!-- ── View: Article ───────────────────────────── -->
+    <div class="view" id="v-article">
+      <div id="art-meta">
+        <div class="art-row">
+          <span class="art-key">作者</span>
+          <span class="art-val author" id="art-author">-</span>
+          <span style="color:var(--dim);margin:0 16px">看板</span>
+          <span class="art-val board" id="art-board">-</span>
+        </div>
+        <div class="art-row">
+          <span class="art-key">標題</span>
+          <span class="art-val title" id="art-title">-</span>
+        </div>
+        <div class="art-row">
+          <span class="art-key">時間</span>
+          <span class="art-val" id="art-time" style="color:var(--dim2)">-</span>
+        </div>
+      </div>
+      <div class="ptt-sep-line" id="art-sep1">─────────────────────────────────────────────────────────────────────────────────────</div>
+      <div id="art-body"></div>
+      <div class="ptt-sep-line" id="art-sep2">─────────────────────────────────────────────────────────────────────────────────────</div>
+      <div id="art-replies"></div>
+      <div id="menu" id="art-menu">
+        <span><span class="mk">R</span><span class="md">回覆</span></span>
+        <span class="msep">│</span>
+        <span id="art-own-btns" style="display:none">
+          <span style="cursor:pointer" onclick="editPost()"><span class="mk">E</span><span class="md">編輯</span></span>
+          <span class="msep">│</span>
+          <span style="cursor:pointer" onclick="deletePost()"><span class="mk">D</span><span class="md">刪除</span></span>
+          <span class="msep">│</span>
+        </span>
+        <span><span class="mk">↑↓</span><span class="md">捲動</span></span>
+        <span class="msep">│</span>
+        <span><span class="mk">←</span><span class="md">返回</span></span>
+      </div>
+    </div>
+
+    <!-- ── View: Edit Post ────────────────────────────── -->
+    <div class="view" id="v-edit">
+      <div class="view-title">
+        <span class="vt-left" id="edit-bar">編輯文章</span>
+        <span class="vt-right">Ctrl+X 儲存  Ctrl+Q 取消</span>
+      </div>
+      <div id="compose-wrap" style="padding:6px 8px">
+        <div style="display:flex;flex:1;flex-direction:column">
+          <div style="display:flex;align-items:baseline;gap:0;margin-bottom:4px">
+            <span class="compose-lbl" style="white-space:nowrap;margin-right:4px">標題：</span>
+            <input class="compose-inp" id="e-title" maxlength="60"
+                   placeholder="標題..." style="flex:1">
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;margin-top:8px">
+            <div class="compose-lbl">內　容：</div>
+            <textarea class="compose-ta" id="e-body"
+                      placeholder="文章內容..."></textarea>
+          </div>
+          <div class="compose-btns">
+            <button class="tbtn" onclick="submitEdit()">[ 儲存 (Ctrl+X) ]</button>
+            <button class="tbtn" onclick="goBack()">[ 取消 (Ctrl+Q) ]</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── View: Compose Post ──────────────────────── -->
+    <div class="view" id="v-compose">
+      <div class="view-title" id="compose-title-bar">
+        <span class="vt-left" id="compose-bar"></span>
+        <span class="vt-right" id="compose-bar-right"></span>
+      </div>
+      <div id="compose-wrap">
+        <div id="compose-form" style="display:none;flex:1;flex-direction:column">
+          <div id="title-row" style="display:flex;align-items:baseline;gap:0;margin-bottom:4px">
+            <span class="compose-lbl" style="white-space:nowrap;margin-right:4px">標題：</span>
+            <span id="type-prefix" style="color:var(--yellow);font-size:14px;white-space:nowrap;padding:2px 4px;border-bottom:1px solid var(--sep)"></span>
+            <input class="compose-inp" id="c-title" maxlength="60"
+                   placeholder="請輸入標題內容..." style="flex:1">
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;margin-top:8px">
+            <div class="compose-lbl">內　容：</div>
+            <textarea class="compose-ta" id="c-body"
+                      placeholder="在此輸入文章內容...&#10;&#10;支援多行文字"></textarea>
+          </div>
+          <div class="compose-btns">
+            <button class="tbtn" onclick="submitPost()">[ 送出 (Ctrl+X) ]</button>
+            <button class="tbtn" onclick="backToTypeSelect()">[ 重選類型 ]</button>
+            <button class="tbtn" onclick="cancelCompose()">[ 取消 (Ctrl+Q) ]</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── View: Reply ─────────────────────────────── -->
+    <div class="view" id="v-reply">
+      <div class="view-title">
+        <span class="vt-left" id="reply-bar">回覆文章</span>
+        <span class="vt-right">Ctrl+X 送出</span>
+      </div>
+      <div id="compose-wrap" style="padding:6px 8px">
+        <div style="flex:1;display:flex;flex-direction:column">
+          <div class="compose-lbl">回覆內容：</div>
+          <textarea class="compose-ta" id="r-body" placeholder="在此輸入回覆..."></textarea>
+        </div>
+        <div class="compose-btns">
+          <button class="tbtn" onclick="submitReply()">[ 送出回覆 (Ctrl+X) ]</button>
+          <button class="tbtn" onclick="goBack()">[ 取消 (Ctrl+Q) ]</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── View: Mesh Chat ─────────────────────────── -->
+    <div class="view" id="v-mesh">
+      <div class="view-title">
+        <span class="vt-left">Meshtastic 即時通訊  ── 透過 LoRa 無線電廣播</span>
+        <span class="vt-right" id="mesh-node-label"></span>
+      </div>
+      <div id="mesh-log"></div>
+      <div id="mesh-input-row">
+        <span class="mi-label" id="mesh-prompt">訊息：</span>
+        <input id="mesh-txt" placeholder="輸入訊息後按 Enter 廣播..." maxlength="200"
+               onkeydown="if(event.key==='Enter')sendMesh()">
+        <button class="tbtn" onclick="sendMesh()">廣播</button>
+        <button class="tbtn" onclick="goBack()">返回</button>
+      </div>
+    </div>
+
+  </div><!-- #main -->
+</div><!-- #terminal -->
+
+<script>
+'use strict';
+
+// ═══════════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════════
+const S = {
+  ws:          null,
+  connected:   false,
+  user:        { name: '', node_id: '', password: '' },
+  board:       '',
+  boardTitle:  '',
+  postId:          null,
+  postAuthorId:    null,
+  boardModId:      null,
+  modEditing:      false,
+  quickReply:      false,
+  searchMode:      null,   // 'board-s' | 'board-title' | 'board-author' | 'post-title' | 'post-author'
+  isSearchResult:  false,  // 目前 v-posts 顯示的是搜尋結果
+  boardFiltered:   false,  // 目前 v-boards 顯示篩選後的看板列表
+  page:        1,
+  total:       0,
+  viewStack:   [],
+  boards:      [],
+  posts:       [],
+  cursor:      0,
+  boardCursor: 0,   // 進入看板前的看板列表 cursor 位置
+};
+
+// ═══════════════════════════════════════════════════
+// WebSocket
+// ═══════════════════════════════════════════════════
+function connect(url) {
+  setMsg('連線中...');
+  try {
+    S.ws = new WebSocket(url);
+  } catch(e) {
+    setMsg('WebSocket 位址無效');
+    return;
+  }
+
+  S.ws.onopen = () => {
+    S.connected = true;
+    document.getElementById('sb-mesh').className = 'sb-mesh on';
+    document.getElementById('sb-mesh').textContent = 'Mesh:●';
+    S.ws.send(JSON.stringify({
+      action:   'login',
+      name:     S.user.name,
+      password: S.user.password,
+    }));
+  };
+
+  S.ws.onmessage = e => onMsg(JSON.parse(e.data));
+
+  S.ws.onclose = () => {
+    S.connected = false;
+    document.getElementById('sb-mesh').className = 'sb-mesh';
+    addMesh('系統', '── WebSocket 連線中斷 ──', 'sys');
+  };
+
+  S.ws.onerror = () => {
+    setMsg('無法連線，請確認伺服器已啟動');
+  };
+}
+
+function tx(data) {
+  if (S.ws && S.ws.readyState === WebSocket.OPEN)
+    S.ws.send(JSON.stringify({ ...data, author: S.user.name, author_id: S.user.node_id }));
+}
+
+// ═══════════════════════════════════════════════════
+// Message handler
+// ═══════════════════════════════════════════════════
+function onMsg(m) {
+  switch (m.type) {
+
+    case 'login_ok':
+      S.user.node_id = m.node_id;
+      document.getElementById('sb-user').textContent  = S.user.name;
+      document.getElementById('sb-node').textContent  = m.node_id;
+      updateOnline(m.online_users || []);
+      document.getElementById('login').classList.add('gone');
+      tx({ action: 'get_boards' });
+      break;
+
+    case 'boards':
+      S.boards = m.boards;
+      renderBoards(m.boards);
+      updateOnline(m.online_users || []);
+      break;
+
+    case 'posts':
+      S.posts = m.posts;
+      S.total = m.total;
+      S.page  = m.page;
+      renderPosts(m.posts, m.board, m.total, m.page);
+      break;
+
+    case 'post':
+      if (S.modEditing) {
+        S.modEditing = false;
+        S.postId       = m.post.id;
+        S.postAuthorId = m.post.author_id || null;
+        pushView('v-edit');
+        document.getElementById('edit-bar').textContent = `[版主] 編輯文章 #${m.post.id}`;
+        document.getElementById('e-title').value = m.post.title;
+        document.getElementById('e-body').value  = m.post.body;
+        setTimeout(() => document.getElementById('e-title').focus(), 50);
+      } else if (S.quickReply) {
+        S.quickReply = false;
+        S.postId = m.post.id;
+        pushView('v-reply');
+        document.getElementById('reply-bar').textContent = `回覆文章 #${m.post.id}`;
+        document.getElementById('r-body').value = '';
+        setTimeout(() => document.getElementById('r-body').focus(), 50);
+      } else {
+        renderArticle(m.post, m.replies);
+      }
+      break;
+
+    case 'post_created':
+      toast('文章發佈成功！#' + m.post_id);
+      goBack(); goBack();
+      setTimeout(() => tx({ action: 'get_posts', board: S.board, page: 1 }), 150);
+      break;
+
+    case 'reply_created':
+      toast('回覆已送出');
+      showView('v-article');
+      tx({ action: 'get_post', post_id: S.postId });
+      break;
+
+    case 'post_edited':
+      toast('文章已儲存');
+      goBack();
+      tx({ action: 'get_post', post_id: S.postId });
+      break;
+
+    case 'post_deleted':
+      toast('文章已刪除');
+      S.postId = null; S.postAuthorId = null;
+      goBack(); goBack();
+      setTimeout(() => tx({ action: 'get_posts', board: S.board, page: 1 }), 150);
+      break;
+
+    case 'mod_post_edited':
+      toast('文章已更新（版主）');
+      goBack();
+      setTimeout(() => tx({ action: 'get_posts', board: S.board, page: S.page }), 150);
+      break;
+
+    case 'mod_post_deleted':
+      toast('文章已刪除（版主）');
+      setTimeout(() => tx({ action: 'get_posts', board: S.board, page: S.page }), 150);
+      break;
+
+    case 'search_results':
+      S.isSearchResult = true;
+      S.posts  = m.posts;
+      S.total  = m.total;
+      S.page   = 1;
+      renderSearchResults(m.posts, m.query, m.label, m.board);
+      break;
+
+    case 'push_updated':
+      updatePushInList(m.post_id, m.push_count, m.pushed);
+      toast(m.pushed ? `推薦成功！共 ${m.push_count} 推` : `已取消推薦　共 ${m.push_count} 推`);
+      break;
+
+    case 'new_post':
+      toast(`[${m.board}] ${m.author}：${m.title}`);
+      if (curView() === 'v-posts' && S.board === m.board)
+        tx({ action: 'get_posts', board: S.board, page: S.page });
+      break;
+
+    case 'new_reply':
+      if (curView() === 'v-article' && S.postId === m.post_id)
+        tx({ action: 'get_post', post_id: m.post_id });
+      break;
+
+    case 'mesh_message':
+      addMesh(m.from, m.text, 'msg', m.time);
+      if (curView() !== 'v-mesh')
+        toast(`[Mesh] ${m.from}: ${m.text}`);
+      break;
+
+    case 'mesh_status':
+      addMesh('系統',
+        m.status === 'connected'
+          ? `── Meshtastic 已連線：${m.node} ──`
+          : '── Meshtastic 裝置斷線 ──', 'sys');
+      document.getElementById('mesh-node-label').textContent =
+        m.status === 'connected' ? `節點: ${m.node}` : '';
+      break;
+
+    case 'user_join':
+      addMesh('系統', `${m.name} 上線`, 'sys');
+      tx({ action: 'get_boards' });
+      break;
+
+    case 'user_leave':
+      addMesh('系統', `${m.name} 離線`, 'sys');
+      break;
+
+    case 'login_error':
+      if (S.ws) { S.ws.close(); S.ws = null; }
+      S.connected = false;
+      document.getElementById('sb-mesh').className = 'sb-mesh';
+      setMsg(m.msg || '登入失敗');
+      break;
+
+    case 'force_logout':
+      if (S.ws) { S.ws.close(); S.ws = null; }
+      S.connected = false;
+      S.user = {};
+      document.getElementById('sb-mesh').className = 'sb-mesh';
+      document.getElementById('login').classList.remove('gone');
+      showView('v-boards');
+      setMsg(m.msg || '帳號已在另一台裝置登入，您已被登出。');
+      break;
+
+    case 'error':
+      toast('錯誤：' + m.msg);
+      break;
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// View management
+// ═══════════════════════════════════════════════════
+function showView(id) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function pushView(id) {
+  S.viewStack.push(curView());
+  showView(id);
+  S.cursor = 0;
+}
+
+function curView() {
+  for (const v of document.querySelectorAll('.view'))
+    if (v.classList.contains('active')) return v.id;
+  return 'v-boards';
+}
+
+function goBack() {
+  const dest = S.viewStack.pop() || 'v-boards';
+  showView(dest);
+  if (dest === 'v-boards') {
+    S.cursor = S.boardCursor;
+    refreshBoardCursor();
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// Render: Board List
+// ═══════════════════════════════════════════════════
+function renderBoards(boards) {
+  const el = document.getElementById('board-list');
+  el.innerHTML = '';
+  boards.forEach((b, i) => {
+    const div = document.createElement('div');
+    div.className = 'board-row' + (i === S.cursor ? ' cursor' : '');
+    div.dataset.idx = i;
+    const cnt = b.post_count.toLocaleString();
+    div.innerHTML =
+      `<span class="b-num">${i+1}</span>` +
+      `<span class="b-name">${h(b.name)}</span>` +
+      `<span class="b-desc">${h(b.title)}</span>` +
+      `<span class="b-mod">${h(b.moderator)}</span>` +
+      `<span class="b-cnt">${cnt}</span>`;
+    div.onclick = () => { S.cursor = i; enterBoard(b.name, b.title); };
+    el.appendChild(div);
+  });
+}
+
+function refreshBoardCursor() {
+  document.querySelectorAll('#board-list .board-row').forEach((r, i) => {
+    r.classList.toggle('cursor', i === S.cursor);
+  });
+  scrollRowIntoView('#board-list', S.cursor);
+}
+
+// ═══════════════════════════════════════════════════
+// Render: Post List
+// ═══════════════════════════════════════════════════
+function renderPosts(posts, board, total, page) {
+  S.cursor = 0;
+  S.isSearchResult = false;
+  showView('v-posts');
+  document.getElementById('sb-board').textContent = board;
+  const pages = Math.ceil(total / 20) || 1;
+  document.getElementById('post-title-bar').textContent =
+    `看板 [${board}] ${S.boardTitle}`;
+  document.getElementById('post-page-bar').textContent =
+    `共 ${total} 篇  第 ${page}/${pages} 頁`;
+
+  const isMod = !!(S.boardModId && S.boardModId === S.user.node_id);
+  document.getElementById('mod-post-btns').style.display = isMod ? '' : 'none';
+
+  const el = document.getElementById('post-list');
+  el.innerHTML = '';
+  if (!posts.length) {
+    el.innerHTML = '<div style="padding:20px;color:var(--dim);text-align:center">── 本版尚無文章，按 P 發表第一篇！ ──</div>';
+    return;
+  }
+  posts.forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'post-row' + (i === S.cursor ? ' cursor' : '');
+    div.dataset.idx = i;
+    div.dataset.postId = p.id;
+    const [pushHtml, pushCls] = pushIndicator(p.push_count || 0);
+    const date = (p.created_at || '').slice(5, 10) || '--/--';
+    const titleCls = p.reply_count > 0 ? 'p-title replied' : 'p-title';
+    div.innerHTML =
+      `<span class="p-num">${p.id}</span>` +
+      `<span class="p-push ${pushCls}${p.pushed ? ' pushed' : ''}">${pushHtml}</span>` +
+      `<span class="${titleCls}">${h(p.title)}</span>` +
+      `<span class="p-author">${h(p.author)}</span>` +
+      `<span class="p-date">${date}</span>`;
+    div.onclick = () => { S.cursor = i; openPost(p.id); };
+    el.appendChild(div);
+  });
+}
+
+function pushIndicator(n) {
+  if (!n || n === 0) return ['', 'p-push p0'];
+  if (n >= 100)      return ['爆', 'p-push boom'];
+  if (n >= 20)       return [String(n), 'p-push p20'];
+  if (n >= 10)       return [String(n), 'p-push p10'];
+  if (n >= 5)        return [String(n), 'p-push p5'];
+  return [String(n), 'p-push p1'];
+}
+
+function refreshPostCursor() {
+  document.querySelectorAll('#post-list .post-row').forEach((r, i) => {
+    r.classList.toggle('cursor', i === S.cursor);
+  });
+  scrollRowIntoView('#post-list', S.cursor);
+}
+
+// ═══════════════════════════════════════════════════
+// Render: Article
+// ═══════════════════════════════════════════════════
+function renderArticle(post, replies) {
+  showView('v-article');
+  S.postId       = post.id;
+  S.postAuthorId = post.author_id || null;
+  document.getElementById('art-author').textContent = post.author;
+  document.getElementById('art-board').textContent  = post.board;
+  document.getElementById('art-title').textContent  = post.title;
+  document.getElementById('art-time').textContent   = post.created_at;
+  // 自己的文章才顯示編輯/刪除按鈕
+  const isOwn = S.postAuthorId && S.postAuthorId === S.user.node_id;
+  document.getElementById('art-own-btns').style.display = isOwn ? '' : 'none';
+
+  const body = document.getElementById('art-body');
+  body.innerHTML = '';
+  const pre = document.createElement('div');
+  pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;padding:4px 0;';
+  pre.textContent = post.body;
+  body.appendChild(pre);
+  body.scrollTop = 0;
+
+  const rEl = document.getElementById('art-replies');
+  rEl.innerHTML = '';
+
+  if (replies && replies.length) {
+    replies.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'reply-block';
+      div.innerHTML =
+        `<span class="r-type arrow">→</span>` +
+        `<span class="r-author">${h(r.author)}</span>` +
+        `<span class="r-body">${h(r.body)}</span>` +
+        `<span class="r-date">${(r.created_at||'').slice(5,10)}</span>`;
+      rEl.appendChild(div);
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// Actions
+// ═══════════════════════════════════════════════════
+function enterBoard(name, title) {
+  S.boardCursor    = S.cursor;   // 記住目前看板列表的 cursor 位置
+  S.board          = name;
+  S.boardTitle     = title || '';
+  S.isSearchResult = false;
+  S.viewStack      = ['v-boards'];
+  const bData      = S.boards.find(b => b.name === name);
+  S.boardModId     = bData ? (bData.moderator_id || null) : null;
+  tx({ action: 'get_posts', board: name, page: 1 });
+}
+
+function openPost(id, boardOverride) {
+  if (boardOverride && boardOverride !== S.board) {
+    S.board = boardOverride;
+    const bData = S.boards.find(b => b.name === boardOverride);
+    S.boardModId = bData ? (bData.moderator_id || null) : null;
+  }
+  S.viewStack.push('v-posts');
+  tx({ action: 'get_post', post_id: id });
+}
+
+const POST_TYPES = ['問題','討論','心得','情報','教學'];
+
+function _typeBarHTML() {
+  return POST_TYPES.map((t, i) =>
+    `<span class="ctype-key">${i+1}</span>.${t}`
+  ).join('<span class="ctype-sep">│</span>');
+}
+
+function composePost() {
+  // 若在看板列表，先進入目前游標所在的看板
+  if (!S.board) {
+    const b = S.boards[S.cursor];
+    if (!b) { toast('請先選擇一個看板'); return; }
+    S.board      = b.name;
+    S.boardTitle = b.title || '';
+    tx({ action: 'get_posts', board: b.name, page: 1 });
+  }
+  document.getElementById('c-title').value = '';
+  document.getElementById('c-body').value  = '';
+  document.getElementById('type-prefix').textContent = '';
+  // 切換到 v-compose，標題列顯示類型選項
+  pushView('v-compose');
+  document.getElementById('compose-bar').innerHTML = _typeBarHTML();
+  document.getElementById('compose-bar-right').textContent = '按數字鍵 1–5 選擇  Esc 取消';
+  document.getElementById('compose-form').style.display = 'none';
+}
+
+function selectType(n) {
+  if (n < 1 || n > POST_TYPES.length) return;
+  const tag = `【${POST_TYPES[n-1]}】`;
+  document.getElementById('type-prefix').textContent = tag;
+  // 標題列切換為正常發文模式
+  document.getElementById('compose-bar').textContent =
+    `發表文章 → [${S.board}] ${S.boardTitle}`;
+  document.getElementById('compose-bar-right').textContent = 'Ctrl+X 送出  Ctrl+Q 取消';
+  document.getElementById('compose-form').style.display = 'flex';
+  setTimeout(() => document.getElementById('c-title').focus(), 50);
+}
+
+function backToTypeSelect() {
+  document.getElementById('compose-bar').innerHTML = _typeBarHTML();
+  document.getElementById('compose-bar-right').textContent = '按數字鍵 1–5 選擇  Esc 取消';
+  document.getElementById('compose-form').style.display = 'none';
+}
+
+function submitPost() {
+  const prefix = document.getElementById('type-prefix').textContent;
+  const input  = document.getElementById('c-title').value.trim();
+  const body   = document.getElementById('c-body').value.trim();
+  if (!input) { toast('請輸入標題'); return; }
+  if (!body)  { toast('請輸入內容'); return; }
+  const title = prefix + input;
+  tx({ action: 'create_post', board: S.board, title, body });
+}
+
+function cancelCompose() { goBack(); }
+
+function composeReply() {
+  if (!S.postId) return;
+  pushView('v-reply');
+  document.getElementById('reply-bar').textContent =
+    `回覆文章 #${S.postId}`;
+  document.getElementById('r-body').value = '';
+  setTimeout(() => document.getElementById('r-body').focus(), 50);
+}
+
+function submitReply() {
+  const body = document.getElementById('r-body').value.trim();
+  if (!body) { toast('請輸入回覆內容'); return; }
+  tx({ action: 'create_reply', post_id: S.postId, body });
+}
+
+function editPost() {
+  if (!S.postId || S.postAuthorId !== S.user.node_id) return;
+  const title = document.getElementById('art-title').textContent;
+  const body  = document.getElementById('art-body').querySelector('div').textContent;
+  pushView('v-edit');
+  document.getElementById('edit-bar').textContent = `編輯文章 #${S.postId}`;
+  document.getElementById('e-title').value = title;
+  document.getElementById('e-body').value  = body;
+  setTimeout(() => document.getElementById('e-title').focus(), 50);
+}
+
+function deletePost() {
+  if (!S.postId || S.postAuthorId !== S.user.node_id) return;
+  const title = document.getElementById('art-title').textContent;
+  if (!confirm(`確定刪除文章「${title}」？\n此操作無法還原。`)) return;
+  tx({ action: 'delete_own_post', post_id: S.postId });
+}
+
+function submitEdit() {
+  const title = document.getElementById('e-title').value.trim();
+  const body  = document.getElementById('e-body').value.trim();
+  if (!title) { toast('請輸入標題'); return; }
+  if (!body)  { toast('請輸入內容'); return; }
+  const isMod = S.boardModId && S.boardModId === S.user.node_id && S.postAuthorId !== S.user.node_id;
+  if (isMod) {
+    tx({ action: 'mod_edit_post', post_id: S.postId, title, body });
+  } else {
+    tx({ action: 'edit_post', post_id: S.postId, title, body });
+  }
+}
+
+function modEditSelected() {
+  const p = S.posts[S.cursor];
+  if (!p) return;
+  S.modEditing = true;
+  S.postId = p.id;
+  tx({ action: 'get_post', post_id: p.id });
+}
+
+function modDeleteSelected() {
+  const p = S.posts[S.cursor];
+  if (!p) return;
+  if (!confirm(`確定刪除文章「${p.title}」？\n此操作無法還原。`)) return;
+  tx({ action: 'mod_delete_post', post_id: p.id });
+}
+
+// ─── 搜尋結果渲染 ─────────────────────────────────────
+function renderSearchResults(posts, query, label, board) {
+  S.cursor = 0;
+  showView('v-posts');
+  closePostSearch();
+  closeBoardSearch();
+  const scope = board ? `[${board}]` : '全站';
+  document.getElementById('sb-board').textContent = `搜尋:${query}`;
+  document.getElementById('post-title-bar').textContent =
+    `搜尋${label}：「${query}」 ${scope}`;
+  document.getElementById('post-page-bar').textContent =
+    `共 ${posts.length} 筆`;
+
+  const isMod = !!(S.boardModId && S.boardModId === S.user.node_id);
+  document.getElementById('mod-post-btns').style.display = isMod ? '' : 'none';
+
+  const el = document.getElementById('post-list');
+  el.innerHTML = '';
+  if (!posts.length) {
+    el.innerHTML = '<div style="padding:20px;color:var(--dim);text-align:center">── 找不到相關文章 ──</div>';
+    return;
+  }
+  posts.forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'post-row' + (i === S.cursor ? ' cursor' : '');
+    div.dataset.idx = i;
+    div.dataset.postId = p.id;
+    const [pushHtml, pushCls] = pushIndicator(p.push_count || 0);
+    const date = (p.created_at || '').slice(5, 10) || '--/--';
+    const titleCls = p.reply_count > 0 ? 'p-title replied' : 'p-title';
+    div.innerHTML =
+      `<span class="p-num">${p.id}</span>` +
+      `<span class="p-push ${pushCls}${p.pushed ? ' pushed' : ''}">${pushHtml}</span>` +
+      `<span class="${titleCls}"><span class="p-board">[${h(p.board)}] </span>${h(p.title)}</span>` +
+      `<span class="p-author">${h(p.author)}</span>` +
+      `<span class="p-date">${date}</span>`;
+    div.onclick = () => { S.cursor = i; openPost(p.id, p.board); };
+    el.appendChild(div);
+  });
+}
+
+// ─── 推薦功能 ─────────────────────────────────────────
+function togglePush() {
+  const p = S.posts[S.cursor];
+  if (!p) return;
+  tx({ action: 'toggle_push', post_id: p.id });
+}
+
+function updatePushInList(post_id, push_count, pushed) {
+  const idx = S.posts.findIndex(p => p.id === post_id);
+  if (idx >= 0) {
+    S.posts[idx].push_count = push_count;
+    S.posts[idx].pushed     = pushed;
+  }
+  const row = document.querySelector(`#post-list .post-row[data-post-id="${post_id}"]`);
+  if (!row) return;
+  const [pushHtml, pushCls] = pushIndicator(push_count);
+  const span = row.querySelector('.p-push');
+  if (span) {
+    span.className = `p-push ${pushCls}${pushed ? ' pushed' : ''}`;
+    span.textContent = pushHtml;
+  }
+}
+
+// ─── 快速回覆（Y 鍵）──────────────────────────────────
+function quickReplySelected() {
+  const p = S.posts[S.cursor];
+  if (!p) return;
+  S.quickReply = true;
+  S.postId = p.id;
+  tx({ action: 'get_post', post_id: p.id });
+}
+
+// ─── 看板搜尋列 ───────────────────────────────────────
+function openBoardSearch(mode) {
+  S.searchMode = mode;
+  const bar = document.getElementById('board-search-bar');
+  const lbl = document.getElementById('board-search-lbl');
+  lbl.textContent = mode === 'board-s' ? '搜尋看板：'
+                  : mode === 'board-title' ? '全站搜尋標題：' : '全站搜尋作者：';
+  bar.classList.add('active');
+  const inp = document.getElementById('board-search-inp');
+  inp.value = '';
+  inp.focus();
+}
+
+function closeBoardSearch() {
+  document.getElementById('board-search-bar').classList.remove('active');
+  S.searchMode = null;
+  if (S.boards.length) renderBoards(S.boards);
+}
+
+function doBoardSearch() {
+  const keyword = document.getElementById('board-search-inp').value.trim();
+  if (!keyword) return;
+  if (S.searchMode === 'board-s') {
+    const filtered = S.boards.filter(b =>
+      b.name.toLowerCase().includes(keyword.toLowerCase()) ||
+      b.title.includes(keyword)
+    );
+    document.getElementById('board-search-bar').classList.remove('active');
+    S.searchMode = null;
+    S.cursor = 0;
+    if (filtered.length) {
+      S.boardFiltered = true;
+      renderBoards(filtered);
+    } else {
+      toast('找不到相符的看板');
+    }
+    return;
+  }
+  const field = S.searchMode === 'board-author' ? 'author' : 'title';
+  document.getElementById('board-search-bar').classList.remove('active');
+  S.searchMode = null;
+  if (!S.viewStack.includes('v-boards')) S.viewStack = ['v-boards'];
+  tx({ action: 'search_posts', query: keyword, field });
+}
+
+// ─── 看板內搜尋列 ─────────────────────────────────────
+function openPostSearch(mode) {
+  S.searchMode = mode;
+  const bar = document.getElementById('post-search-bar');
+  const lbl = document.getElementById('post-search-lbl');
+  lbl.textContent = mode === 'post-author' ? '搜尋作者：' : '搜尋標題：';
+  bar.classList.add('active');
+  const inp = document.getElementById('post-search-inp');
+  inp.value = '';
+  inp.focus();
+}
+
+function closePostSearch() {
+  document.getElementById('post-search-bar').classList.remove('active');
+  S.searchMode = null;
+}
+
+function doPostSearch() {
+  const keyword = document.getElementById('post-search-inp').value.trim();
+  if (!keyword) { closePostSearch(); return; }
+  const field = S.searchMode === 'post-author' ? 'author' : 'title';
+  closePostSearch();
+  tx({ action: 'search_posts', query: keyword, field, board: S.board || undefined });
+}
+
+function openMesh() {
+  pushView('v-mesh');
+  document.getElementById('mesh-prompt').textContent = `[${S.user.name}] `;
+  setTimeout(() => document.getElementById('mesh-txt').focus(), 50);
+}
+
+function sendMesh() {
+  const inp  = document.getElementById('mesh-txt');
+  const text = inp.value.trim();
+  if (!text) return;
+  tx({ action: 'send_mesh', text });
+  inp.value = '';
+}
+
+// ═══════════════════════════════════════════════════
+// Online users
+// ═══════════════════════════════════════════════════
+function updateOnline(users) {
+  document.getElementById('sb-online').textContent = users.length;
+  document.getElementById('online-list').innerHTML =
+    users.map(u => `<span class="ol-user">◆ ${h(u.name)}</span>`).join('');
+}
+
+// ═══════════════════════════════════════════════════
+// Mesh chat log
+// ═══════════════════════════════════════════════════
+function addMesh(from, text, type = 'msg', time = null) {
+  const el   = document.getElementById('mesh-log');
+  const now  = time || new Date().toTimeString().slice(0, 8);
+  const row  = document.createElement('div');
+  row.className = 'mlog-row';
+  if (type === 'sys') {
+    row.innerHTML =
+      `<span class="mlog-time">${now}</span><span class="mlog-sys">${h(text)}</span>`;
+  } else {
+    row.innerHTML =
+      `<span class="mlog-time">${now}</span>` +
+      `<span class="mlog-from">${h(from)}</span>` +
+      `<span class="mlog-text">${h(text)}</span>`;
+  }
+  el.appendChild(row);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════
+// Keyboard
+// ═══════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  const v   = curView();
+  const tag = document.activeElement.tagName;
+
+  // 在發文畫面、等待選擇類型時（compose-form 尚未顯示）：攔截數字鍵與 Esc
+  if (v === 'v-compose' &&
+      document.getElementById('compose-form').style.display === 'none') {
+    if (/^[1-5]$/.test(e.key)) { e.preventDefault(); selectType(parseInt(e.key)); return; }
+    if (e.key === 'Escape') { cancelCompose(); return; }
+    return;
+  }
+
+  // 搜尋列開啟中：攔截 Enter / Esc
+  if (S.searchMode && tag === 'INPUT') {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (S.searchMode.startsWith('board')) doBoardSearch();
+      else doPostSearch();
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (S.searchMode.startsWith('board')) closeBoardSearch();
+      else closePostSearch();
+    }
+    return;
+  }
+
+  if (['INPUT', 'TEXTAREA'].includes(tag)) return;
+
+  // ← 左鍵：返回上一層 / 離開 BBS
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    if (v === 'v-boards') {
+      if (S.boardFiltered) {
+        S.boardFiltered = false;
+        S.cursor = 0;
+        renderBoards(S.boards);
+      } else if (confirm('確定要離開 BBS？')) {
+        if (S.user.node_id) tx({ action: 'logout', node_id: S.user.node_id });
+        window.close();
+      }
+    } else {
+      goBack();
+      document.getElementById('sb-board').textContent = S.board || '首頁';
+    }
+    return;
+  }
+
+  // Q – 同左鍵（保留相容）
+  if (e.key === 'q' || e.key === 'Q') {
+    if (v === 'v-boards') {
+      if (S.boardFiltered) {
+        S.boardFiltered = false;
+        S.cursor = 0;
+        renderBoards(S.boards);
+      } else if (confirm('確定要離開 BBS？')) {
+        if (S.user.node_id) tx({ action: 'logout', node_id: S.user.node_id });
+        window.close();
+      }
+    } else {
+      goBack();
+      document.getElementById('sb-board').textContent = S.board || '首頁';
+    }
+    return;
+  }
+
+  // ↑↓ 移動游標
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (v === 'v-boards') {
+      S.cursor = Math.max(0, S.cursor - 1);
+      refreshBoardCursor();
+    } else if (v === 'v-posts') {
+      S.cursor = Math.max(0, S.cursor - 1);
+      refreshPostCursor();
+    } else if (v === 'v-article') {
+      document.getElementById('art-body').scrollBy(0, -40);
+    }
+    return;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (v === 'v-boards') {
+      S.cursor = Math.min(S.boards.length - 1, S.cursor + 1);
+      refreshBoardCursor();
+    } else if (v === 'v-posts') {
+      S.cursor = Math.min(S.posts.length - 1, S.cursor + 1);
+      refreshPostCursor();
+    } else if (v === 'v-article') {
+      document.getElementById('art-body').scrollBy(0, 40);
+    }
+    return;
+  }
+
+  // → 右鍵：進入看板 / 開啟文章
+  if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    if (v === 'v-boards' && S.boards[S.cursor]) {
+      const b = S.boards[S.cursor];
+      enterBoard(b.name, b.title);
+    } else if (v === 'v-posts' && S.posts[S.cursor]) {
+      openPost(S.posts[S.cursor].id);
+    }
+    return;
+  }
+
+  // Enter – 同右鍵（保留相容）
+  if (e.key === 'Enter') {
+    if (v === 'v-boards' && S.boards[S.cursor]) {
+      const b = S.boards[S.cursor];
+      enterBoard(b.name, b.title);
+    } else if (v === 'v-posts' && S.posts[S.cursor]) {
+      openPost(S.posts[S.cursor].id);
+    }
+    return;
+  }
+
+  // P – 發文（在看板列表或文章列表均可）
+  if (e.key === 'p' || e.key === 'P') {
+    if (v === 'v-posts' || v === 'v-boards') { composePost(); return; }
+  }
+
+  // S – 搜尋看板（v-boards）
+  if ((e.key === 's' || e.key === 'S') && v === 'v-boards') {
+    e.preventDefault(); openBoardSearch('board-s'); return;
+  }
+
+  // / – 搜尋標題
+  if (e.key === '/') {
+    e.preventDefault();
+    if (v === 'v-boards') { openBoardSearch('board-title'); return; }
+    if (v === 'v-posts')  { openPostSearch('post-title');   return; }
+  }
+
+  // A – 搜尋作者
+  if (e.key === 'a' || e.key === 'A') {
+    e.preventDefault();
+    if (v === 'v-boards') { openBoardSearch('board-author'); return; }
+    if (v === 'v-posts')  { openPostSearch('post-author');   return; }
+  }
+
+  // X – 推薦文章（v-posts）
+  if ((e.key === 'x' || e.key === 'X') && v === 'v-posts') {
+    togglePush(); return;
+  }
+
+  // Y – 快速回覆選中文章（v-posts）
+  if ((e.key === 'y' || e.key === 'Y') && v === 'v-posts') {
+    quickReplySelected(); return;
+  }
+
+  // R – 回覆
+  if ((e.key === 'r' || e.key === 'R') && v === 'v-article') {
+    composeReply(); return;
+  }
+
+  // E/D – 版主在文章列表編輯/刪除
+  if (v === 'v-posts' && S.boardModId && S.boardModId === S.user.node_id) {
+    if (e.key === 'e' || e.key === 'E') { modEditSelected(); return; }
+    if (e.key === 'd' || e.key === 'D') { modDeleteSelected(); return; }
+  }
+
+  // E – 編輯自己的文章  D – 刪除自己的文章
+  if (v === 'v-article' && S.postAuthorId === S.user.node_id) {
+    if (e.key === 'e' || e.key === 'E') { editPost(); return; }
+    if (e.key === 'd' || e.key === 'D') { deletePost(); return; }
+  }
+
+  // M – Mesh 聊天
+  if ((e.key === 'm' || e.key === 'M') && v === 'v-boards') {
+    openMesh(); return;
+  }
+
+  // [ ] – 文章列表翻頁
+  if (e.key === '[' && v === 'v-posts' && S.page > 1) {
+    tx({ action: 'get_posts', board: S.board, page: S.page - 1 });
+  }
+  if (e.key === ']' && v === 'v-posts') {
+    if (S.page * 20 < S.total)
+      tx({ action: 'get_posts', board: S.board, page: S.page + 1 });
+  }
+});
+
+// Ctrl+X 送出 / Ctrl+Q 取消
+document.getElementById('c-title').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('c-body').focus(); }
+  if (e.ctrlKey && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); submitPost(); }
+  if (e.ctrlKey && (e.key === 'q' || e.key === 'Q')) { e.preventDefault(); cancelCompose(); }
+});
+document.getElementById('c-body').addEventListener('keydown', e => {
+  if (e.ctrlKey && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); submitPost(); }
+  if (e.ctrlKey && (e.key === 'q' || e.key === 'Q')) { e.preventDefault(); cancelCompose(); }
+});
+document.getElementById('r-body').addEventListener('keydown', e => {
+  if (e.ctrlKey && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); submitReply(); }
+  if (e.ctrlKey && (e.key === 'q' || e.key === 'Q')) { e.preventDefault(); goBack(); }
+});
+document.getElementById('e-title').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('e-body').focus(); }
+  if (e.ctrlKey && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); submitEdit(); }
+  if (e.ctrlKey && (e.key === 'q' || e.key === 'Q')) { e.preventDefault(); goBack(); }
+});
+document.getElementById('e-body').addEventListener('keydown', e => {
+  if (e.ctrlKey && (e.key === 'x' || e.key === 'X')) { e.preventDefault(); submitEdit(); }
+  if (e.ctrlKey && (e.key === 'q' || e.key === 'Q')) { e.preventDefault(); goBack(); }
+});
+
+// ═══════════════════════════════════════════════════
+// Login / Register
+// ═══════════════════════════════════════════════════
+function setMsg(s)  { document.getElementById('l-msg').textContent = s; }
+function setRMsg(s) { document.getElementById('r-msg').textContent = s; }
+
+function showLogin() {
+  document.getElementById('l-panel-reg').style.display   = 'none';
+  document.getElementById('l-panel-login').style.display = '';
+  setMsg('');
+  setTimeout(() => document.getElementById('l-name').focus(), 50);
+}
+
+function showRegister() {
+  document.getElementById('l-panel-login').style.display = 'none';
+  document.getElementById('l-panel-reg').style.display   = '';
+  setRMsg('');
+  setTimeout(() => document.getElementById('r-name').focus(), 50);
+}
+
+function doLogin() {
+  const name = document.getElementById('l-name').value.trim();
+  const pass = document.getElementById('l-pass').value;
+  const url  = document.getElementById('l-ws').value.trim();
+  if (!name) { setMsg('請輸入帳號'); return; }
+  if (!pass) { setMsg('請輸入密碼'); return; }
+  setMsg('連線中...');
+  S.user.name     = name;
+  S.user.password = pass;
+  connect(url);
+}
+
+async function doRegister() {
+  const name  = document.getElementById('r-name').value.trim();
+  const pass  = document.getElementById('r-pass').value;
+  const pass2 = document.getElementById('r-pass2').value;
+  const url   = document.getElementById('l-ws').value.trim();
+  if (!name)          { setRMsg('請輸入帳號');     return; }
+  if (name.length < 2){ setRMsg('帳號至少 2 字元');return; }
+  if (!pass)          { setRMsg('請輸入密碼');     return; }
+  if (pass.length < 4){ setRMsg('密碼至少 4 字元');return; }
+  if (pass !== pass2) { setRMsg('兩次密碼不一致'); return; }
+
+  setRMsg('申請中...');
+  // 將 ws:// 換算成 http:// 取得伺服器基礎 URL
+  const httpBase = url.replace(/^ws(s?):\/\//, 'http$1://').replace(/\/ws$/, '');
+  try {
+    const res  = await fetch(httpBase + '/api/register', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ name, password: pass }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showLogin();
+      document.getElementById('l-name').value = name;
+      setMsg('✔ 帳號申請成功，請輸入密碼登入');
+    } else {
+      setRMsg('✘ ' + (data.error || '申請失敗'));
+    }
+  } catch(e) {
+    setRMsg('✘ 無法連線到伺服器，請確認伺服器已啟動');
+  }
+}
+
+// 搜尋列輸入框
+document.getElementById('board-search-inp').addEventListener('keydown', e => {
+  if (e.key === 'Enter')                           { e.preventDefault(); e.stopPropagation(); doBoardSearch(); }
+  if (e.key === 'Escape' || e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); closeBoardSearch(); }
+});
+document.getElementById('post-search-inp').addEventListener('keydown', e => {
+  if (e.key === 'Enter')                           { e.preventDefault(); e.stopPropagation(); doPostSearch(); }
+  if (e.key === 'Escape' || e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); closePostSearch(); }
+});
+
+// 鍵盤快速切換
+document.getElementById('l-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('l-pass').focus();
+});
+document.getElementById('l-pass').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('l-ws').focus();
+});
+document.getElementById('l-ws').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+document.getElementById('r-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('r-pass').focus();
+});
+document.getElementById('r-pass').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('r-pass2').focus();
+});
+document.getElementById('r-pass2').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doRegister();
+});
+
+// ═══════════════════════════════════════════════════
+// Toast notification
+// ═══════════════════════════════════════════════════
+let _toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.style.display = 'none', 3500);
+}
+
+// ═══════════════════════════════════════════════════
+// Clock
+// ═══════════════════════════════════════════════════
+setInterval(() => {
+  document.getElementById('sb-time').textContent =
+    new Date().toTimeString().slice(0, 8);
+}, 1000);
+
+// ═══════════════════════════════════════════════════
+// Utils
+// ═══════════════════════════════════════════════════
+function h(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function scrollRowIntoView(containerSel, idx) {
+  const c = document.querySelector(containerSel);
+  const rows = c.querySelectorAll('[data-idx]');
+  if (rows[idx]) rows[idx].scrollIntoView({ block: 'nearest' });
+}
+</script>
+</body>
+</html>
