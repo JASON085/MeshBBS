@@ -9,6 +9,29 @@
 
 專案適合在 Windows、Linux 或 Raspberry Pi 上搭配 Meshtastic 裝置使用。
 
+## MeshBBS 與 Android Server 說明
+
+### MeshBBS
+
+`MeshBBS` 是這個專案的 Android 用戶端 App。
+
+- 提供 Android 手機上的 BBS / Mesh 訊息使用介面
+- 透過已安裝的 Meshtastic App 與裝置通訊
+- 可瀏覽看板、發文、回文、登入與接收 Mesh 訊息
+
+如果你只是想在 Android 裝置上使用 BBS，用 `MeshBBS` 即可。
+
+### Android Server
+
+Android 版本另外提供一個 server flavor，可作為 `Android Server` / `MeshServer` 使用。
+
+- 讓 Android 裝置本身直接扮演 BBS Server
+- 使用 Python + SQLite 在 Android 上維持站台資料
+- 仍沿用已安裝的 Meshtastic App 作為無線傳輸路徑
+- 可和 `MeshBBS` 用戶端 App 共存於同一台裝置
+
+如果你希望手機本身直接提供 BBS 服務，而不是只當 client，就使用 Android Server 版本。
+
 ## 專案結構
 
 - `meshtastic_bbs_server.py`: BBS 伺服器，提供 HTTP / WebSocket / 管理 API
@@ -123,6 +146,16 @@ pyinstaller build_client.spec
 
 Android 專案位於 `android/MeshtasticBBS/`。  
 若要製作 release APK，請自行準備本機簽章檔與 `signing/signing.properties`，不要提交到 GitHub。
+
+Android 專案目前採用 flavor 方式輸出兩種 APK：
+
+- `MeshBBS-<version>.apk`: Android client 版本
+- `MeshBBS-server-<version>.apk`: Android Server 版本
+
+其中：
+
+- client 版本主要給一般使用者登入、閱讀、發文與收發 Mesh 訊息
+- server 版本主要給要在 Android 裝置上架設 BBS 節點的人使用
 
 可用以下兩種方式提供 release signing 密碼：
 
