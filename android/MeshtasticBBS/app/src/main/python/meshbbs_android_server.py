@@ -3,7 +3,10 @@ import json
 import os
 import shutil
 import sqlite3
+import time
 from datetime import datetime
+
+CLIENT_STALE_SECONDS = 75
 
 
 def _now():
@@ -22,6 +25,11 @@ def _hash_password(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _offline_account_node_id(name: str) -> str:
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
+    return f"ACC-{digest}"
+
+
 class AndroidServerCore:
     def __init__(self):
         home = os.environ.get("HOME") or os.getcwd()
@@ -34,7 +42,9 @@ class AndroidServerCore:
         self._init_db()
 
     def _conn(self):
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
 
     def _ensure_storage_dirs(self):
         db_dir = os.path.dirname(self.db_path)
@@ -414,9 +424,33 @@ class AndroidServerCore:
         return cur.rowcount > 0, None if cur.rowcount > 0 else "User not found"
 
     def clear_mesh_messages(self):
-        with self._conn() as conn:
-            conn.execute("DELETE FROM mesh_messages")
-            conn.commit()
+        last_error = None
+        for _ in range(3):
+            try:
+                with self._conn() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute("DELETE FROM mesh_messages")
+                    conn.commit()
+                break
+            except sqlite3.OperationalError as exc:
+                last_error = exc
+                time.sleep(0.2)
+        else:
+            return False, f"Clear mesh messages failed: {last_error}"
+
+        try:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM sqlite_sequence WHERE name='mesh_messages'")
+                conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            with self._conn() as conn:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except sqlite3.OperationalError:
+            pass
+
         return True, None
 
     def get_all_admins(self):
@@ -478,7 +512,7 @@ class AndroidServerCore:
                     INSERT INTO boards (name, title, moderator, moderator_id, post_count)
                     VALUES (?, ?, ?, ?, 0)
                     """,
-                    (name, title, moderator or "SYSOP", ""),
+                    (name, title, moderator or "SYSOP", moderator_id or ""),
                 )
                 conn.commit()
                 return True, None
@@ -495,7 +529,7 @@ class AndroidServerCore:
                 SET title=?, moderator=?, moderator_id=?
                 WHERE name=?
                 """,
-                (title, moderator or "SYSOP", "", name),
+                (title, moderator or "SYSOP", moderator_id or "", name),
             )
             conn.commit()
             return cur.rowcount > 0, None if cur.rowcount > 0 else "Board not found"
@@ -587,6 +621,7 @@ class AndroidServerCore:
         return {"ok": True, "msg": "OK"}
 
     def get_dashboard(self):
+        self.prune_stale_clients()
         backups = self._backup_entries()
         return {
             "stats": self.get_stats(),
@@ -616,6 +651,62 @@ class AndroidServerCore:
                 (node_id, name, _now_iso(), 1 if online else 0),
             )
             conn.commit()
+
+    def touch_user_session(self, node_id: str, name: str = ""):
+        with self._conn() as conn:
+            if name:
+                cur = conn.execute(
+                    "UPDATE users SET last_seen=?, online=1 WHERE node_id=? AND name=?",
+                    (_now_iso(), node_id, name),
+                )
+                if cur.rowcount == 0:
+                    cur = conn.execute(
+                        "UPDATE users SET node_id=?, last_seen=?, online=1 WHERE name=?",
+                        (node_id, _now_iso(), name),
+                    )
+            else:
+                cur = conn.execute(
+                    "UPDATE users SET last_seen=?, online=1 WHERE node_id=?",
+                    (_now_iso(), node_id),
+                )
+            conn.commit()
+        if cur.rowcount > 0:
+            if name:
+                self.active_client_names[node_id] = name
+            return True
+        return False
+
+    def prune_stale_clients(self):
+        cutoff = time.time() - CLIENT_STALE_SECONDS
+        stale_ids = []
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT node_id
+                FROM users
+                WHERE online=1
+                  AND is_web=0
+                  AND last_seen IS NOT NULL
+                """
+            ).fetchall()
+            for row in rows:
+                node_id = row[0]
+                try:
+                    last_seen = datetime.fromisoformat(
+                        conn.execute("SELECT last_seen FROM users WHERE node_id=?", (node_id,)).fetchone()[0]
+                    ).timestamp()
+                except Exception:
+                    continue
+                if last_seen < cutoff:
+                    stale_ids.append(node_id)
+            for node_id in stale_ids:
+                conn.execute("UPDATE users SET online=0 WHERE node_id=?", (node_id,))
+            conn.commit()
+        for node_id in stale_ids:
+            self.relay_clients.discard(node_id)
+            self.admin_clients.discard(node_id)
+            self.active_client_names.pop(node_id, None)
+        return stale_ids
 
     def get_online_users(self):
         with self._conn() as conn:
@@ -660,6 +751,29 @@ class AndroidServerCore:
             if stored_pw_hash and stored_pw_hash != pw_hash:
                 return None, False, "Wrong password", None
             kicked_id = stored_node_id if stored_node_id != node_id else None
+            if node_id != stored_node_id:
+                conn.execute(
+                    "DELETE FROM users WHERE node_id=? AND password_hash=''",
+                    (node_id,),
+                )
+                conflict = conn.execute(
+                    "SELECT name FROM users WHERE node_id=? AND name<>?",
+                    (node_id, name),
+                ).fetchone()
+                if conflict:
+                    conflict_name = conflict[0]
+                    replacement_id = _offline_account_node_id(conflict_name)
+                    if replacement_id == node_id:
+                        replacement_id = f"{replacement_id}-OFF"
+                    conn.execute(
+                        """
+                        UPDATE users
+                        SET node_id=?, last_seen=?, online=0
+                        WHERE name=?
+                        """,
+                        (replacement_id, _now_iso(), conflict_name),
+                    )
+                    self.active_client_names.pop(node_id, None)
             conn.execute(
                 """
                 UPDATE users
@@ -677,6 +791,18 @@ class AndroidServerCore:
 
     def push_identity(self, node_id: str):
         return self.active_client_name(node_id) or (node_id or "").strip()
+
+    def can_moderate_board(self, conn, board: str, node_id: str, active_name: str = ""):
+        row = conn.execute(
+            "SELECT moderator, moderator_id FROM boards WHERE name=?",
+            (board,),
+        ).fetchone()
+        if not row:
+            return False
+        moderator, moderator_id = (row[0] or "").strip(), (row[1] or "").strip()
+        active_name = (active_name or self.active_client_name(node_id)).strip()
+        identities = {value for value in (node_id, active_name) if value}
+        return bool((moderator and moderator in identities) or (moderator_id and moderator_id in identities))
 
     def create_post(self, board: str, author_id: str, author: str, title: str, body: str):
         with self._conn() as conn:
@@ -744,7 +870,10 @@ class AndroidServerCore:
                 return False, "Post not found", None
             board, author_name = post
             active_name = self.active_client_name(node_id)
-            if not active_name or author_name != active_name:
+            can_delete = active_name and (
+                author_name == active_name or self.can_moderate_board(conn, board, node_id, active_name)
+            )
+            if not can_delete:
                 return False, "Permission denied", None
             conn.execute("DELETE FROM replies WHERE post_id=?", (post_id,))
             conn.execute("DELETE FROM posts WHERE id=?", (post_id,))
@@ -755,16 +884,25 @@ class AndroidServerCore:
     def delete_reply(self, reply_id: int, node_id: str):
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT post_id, author FROM replies WHERE id=?",
+                """
+                SELECT r.post_id, r.author, p.board
+                FROM replies r
+                JOIN posts p ON p.id = r.post_id
+                WHERE r.id=?
+                """,
                 (reply_id,),
             ).fetchone()
             if not row:
                 return False, "Reply not found"
             active_name = self.active_client_name(node_id)
-            if not active_name or row[1] != active_name:
+            post_id, author_name, board = row
+            can_delete = active_name and (
+                author_name == active_name or self.can_moderate_board(conn, board, node_id, active_name)
+            )
+            if not can_delete:
                 return False, "Permission denied"
             conn.execute("DELETE FROM replies WHERE id=?", (reply_id,))
-            conn.execute("UPDATE posts SET reply_count=MAX(0, reply_count-1) WHERE id=?", (row[0],))
+            conn.execute("UPDATE posts SET reply_count=MAX(0, reply_count-1) WHERE id=?", (post_id,))
             conn.commit()
             return True, None
 
@@ -1020,6 +1158,11 @@ class AndroidServerCore:
             keyword = parts[2] if len(parts) > 2 else ""
             results = self.search_posts(keyword, field, board or None, node_id)
             return _json_dumps({"type": "search_results", "posts": results, "query": keyword, "total": len(results)})
+
+        if cmd == "HEARTBEAT":
+            name = args.strip()
+            ok = self.touch_user_session(node_id, name)
+            return _json_dumps({"type": "heartbeat_ok", "ok": ok, "name": self.active_client_name(node_id) or name})
 
         if cmd == "CHAT":
             parts = args.split(":", 1)

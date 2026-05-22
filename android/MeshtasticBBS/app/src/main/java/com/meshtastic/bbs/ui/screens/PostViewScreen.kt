@@ -37,9 +37,16 @@ fun PostViewScreen(vm: BbsViewModel, postId: Int) {
 
     val currentUser = state.currentUser
     val boardName = post?.board?.ifBlank { state.currentBoardName } ?: state.currentBoardName
+    val currentBoard = state.boards.firstOrNull { it.name == boardName }
+    val isBoardModerator = currentUser != null && currentBoard != null &&
+        (currentBoard.moderator == currentUser.name ||
+            currentBoard.moderatorId == currentUser.nodeId ||
+            currentBoard.moderatorId == currentUser.name)
     val isMine = postBelongsToUser(post, currentUser)
-    val canManage = post != null && isMine
-    val myReplies = post?.replies?.filter { replyBelongsToUser(it, currentUser) }.orEmpty()
+    val canManage = post != null && (isMine || isBoardModerator)
+    val myReplies = post?.replies
+        ?.filter { isBoardModerator || replyBelongsToUser(it, currentUser) }
+        .orEmpty()
 
     Scaffold(
         containerColor = Background,
@@ -110,8 +117,18 @@ fun PostViewScreen(vm: BbsViewModel, postId: Int) {
         }
     ) { pv ->
         if (state.isLoading && post == null) {
-            Box(Modifier.fillMaxSize().padding(pv), Alignment.Center) {
-                CircularProgressIndicator(color = Primary)
+            Box(Modifier.fillMaxSize().padding(pv)) {
+                LoadingTransferProgress(
+                    active = state.loadInProgress,
+                    stage = state.loadStage,
+                    progress = state.loadProgress,
+                )
+                if (!state.loadInProgress) {
+                    CircularProgressIndicator(
+                        color = Primary,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
             }
             return@Scaffold
         }
@@ -164,7 +181,7 @@ fun PostViewScreen(vm: BbsViewModel, postId: Int) {
                     ReplyCard(
                         reply = reply,
                         isAuthorReply = reply.authorId == post.authorId,
-                        canManage = replyBelongsToUser(reply, currentUser),
+                        canManage = isBoardModerator || replyBelongsToUser(reply, currentUser),
                         onEdit = { editingReply = reply },
                         onDelete = { deletingReply = reply },
                     )

@@ -99,6 +99,7 @@ sealed class BbsEvent {
     data class PushUpdated(val postId: Int, val pushCount: Int, val pushed: Boolean) : BbsEvent()
     data class PasswordChanged(val name: String) : BbsEvent()
     data class SubmitProgress(val stage: String, val progress: Int, val active: Boolean) : BbsEvent()
+    data class LoadProgress(val stage: String, val progress: Int, val active: Boolean) : BbsEvent()
     data class SearchResults(val posts: List<Post>, val query: String, val total: Int) : BbsEvent()
     data class NewMeshMessage(val msg: MeshMessage) : BbsEvent()
     data class MeshStatus(val connected: Boolean, val node: String) : BbsEvent()

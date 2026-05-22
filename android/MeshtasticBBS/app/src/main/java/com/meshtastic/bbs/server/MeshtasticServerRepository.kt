@@ -28,9 +28,12 @@ class MeshtasticServerRepository(
         private const val ACTION_RECEIVED = "$MESH_PACKAGE.DATA_PACKET_RECEIVED"
         private const val EXTRA_PACKET = "$MESH_PACKAGE.DATA_PACKET"
         private const val EXTRA_PAYLOAD = "$MESH_PACKAGE.Payload"
+        private const val RECEIVER_CLASS = "com.meshtastic.bbs.data.MeshPacketReceiver"
         private const val BBS_APP = 257
         private val BBS_PRIVATE_PREFIX =
             byteArrayOf('M'.code.toByte(), 'B'.code.toByte(), 'B'.code.toByte(), 'S'.code.toByte(), '1'.code.toByte())
+        private val BBS_BINARY_PREFIX =
+            byteArrayOf('M'.code.toByte(), 'B'.code.toByte(), 'B'.code.toByte(), 'S'.code.toByte(), '2'.code.toByte(), '|'.code.toByte())
         private val MESH_CONNECTED_ACTIONS = listOf(
             "$MESH_PACKAGE.MESH_CONNECTED",
             "$MESH_PACKAGE.MeshConnected",
@@ -156,7 +159,14 @@ class MeshtasticServerRepository(
                 meshService = IMeshService.Stub.asInterface(binder)
                 myNodeId = runCatching { meshService?.getMyId().orEmpty() }.getOrDefault("")
                 runCatching {
-                    meshService?.subscribeReceiver(context.packageName, "com.meshtastic.bbs.data.MeshPacketReceiver")
+                    meshService?.subscribeReceiver(
+                        context.packageName,
+                        RECEIVER_CLASS,
+                    )
+                }.onSuccess {
+                    onLog("subscribeReceiver ok: $RECEIVER_CLASS")
+                }.onFailure {
+                    onLog("subscribeReceiver failed: ${it.message}")
                 }
                 onMeshState(true, myNodeId)
                 onLog("Meshtastic service bound ${myNodeId.ifBlank { "(id pending)" }}")
@@ -224,6 +234,7 @@ class MeshtasticServerRepository(
         return when {
             startsWithPrefix(bytes, BBS_PRIVATE_PREFIX) ->
                 String(bytes, BBS_PRIVATE_PREFIX.size, bytes.size - BBS_PRIVATE_PREFIX.size, Charsets.UTF_8)
+            startsWithPrefix(bytes, BBS_BINARY_PREFIX) -> null
             dataType == BBS_APP -> runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
             !isPrivate -> runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
             else -> null

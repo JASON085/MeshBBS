@@ -38,6 +38,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,11 +92,15 @@ fun ComposeScreen(
         }
     }
 
-    var selectedType by remember { mutableStateOf(if (isReply || isEdit) -1 else 0) }
-    var title by remember {
+    var selectedType by rememberSaveable(isReply, isEdit, boardName, replyToPostId, editPostId) {
+        mutableStateOf(if (isReply || isEdit) -1 else 0)
+    }
+    var title by rememberSaveable(isEdit, editPostId) {
         mutableStateOf(if (isEdit) extractEditTitle(state.currentPost?.title.orEmpty()) else "")
     }
-    var body by remember { mutableStateOf(if (isEdit) state.currentPost?.body ?: "" else "") }
+    var body by rememberSaveable(isEdit, isReply, replyToPostId, editPostId) {
+        mutableStateOf(if (isEdit) state.currentPost?.body ?: "" else "")
+    }
 
     val screenLabel = when {
         isEdit -> "編輯文章"

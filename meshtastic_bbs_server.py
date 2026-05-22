@@ -370,6 +370,7 @@ class BBS:
                 "SELECT post_id, author_id FROM replies WHERE id=?", (reply_id,)
             ).fetchone()
             if not row:
+                log.info("mesh_login auto-register: name=%s node_id=%s", name, node_id)
                 return False, "找不到回覆"
             if row[1] != author_id:
                 return False, "無權限刪除此回覆"
@@ -502,10 +503,11 @@ class BBS:
         kicked_id: 被擠下線的舊裝置 node_id（None 表示無）
         """
         if not name or not pw_hash:
+            log.warning("mesh_login rejected: empty credentials name=%r node_id=%s", name, node_id)
             return None, False, "帳號和密碼不能為空", None
         with self._conn() as c:
             row = c.execute(
-                "SELECT node_id, password_hash, banned FROM users WHERE name=?", (name,)
+                "SELECT node_id, name, password_hash, banned FROM users WHERE name=?", (name,)
             ).fetchone()
             if not row:
                 # 檢查此 node_id 是否已被自動註冊（例如曾傳過聊天訊息）
@@ -525,10 +527,13 @@ class BBS:
                         (node_id, name, datetime.now().isoformat(), pw_hash)
                     )
                 return node_id, True, None, None
-            stored_node_id, stored_pw_hash, banned = row
+            stored_node_id, stored_name, stored_pw_hash, banned = row
+            if banned:
+                log.warning("mesh_login blocked: banned name=%s stored_node_id=%s", name, stored_node_id)
             if banned:
                 return None, False, "此帳號已被封禁", None
             if stored_pw_hash and stored_pw_hash != pw_hash:
+                log.warning("mesh_login failed: bad password name=%s stored_node_id=%s", name, stored_node_id)
                 return None, False, "密碼錯誤", None
             # 密碼正確 → 檢查舊裝置是否在線（需踢出）
             kicked_id = None
@@ -544,10 +549,11 @@ class BBS:
                     (node_id,)
                 )
             c.execute(
-                "UPDATE users SET node_id=?, last_seen=?, online=1, password_hash=?"
+                "UPDATE users SET node_id=?, name=?, last_seen=?, online=1, password_hash=?"
                 " WHERE node_id=?",
-                (node_id, datetime.now().isoformat(), pw_hash, stored_node_id)
+                (node_id, stored_name or name, datetime.now().isoformat(), pw_hash, stored_node_id)
             )
+            log.info("mesh_login ok: name=%s node_id=%s previous_node_id=%s kicked_id=%s", name, node_id, stored_node_id, kicked_id)
             return node_id, False, None, kicked_id
 
     def verify_user_login(self, name: str, password: str):

@@ -105,6 +105,12 @@ fun PostListScreen(vm: BbsViewModel, boardName: String) {
         }
     ) { pv ->
         Column(Modifier.padding(pv)) {
+            LoadingTransferProgress(
+                active = state.loadInProgress,
+                stage = state.loadStage,
+                progress = state.loadProgress,
+            )
+
             // Search bar
             if (showSearch) {
                 Card(
@@ -139,7 +145,9 @@ fun PostListScreen(vm: BbsViewModel, boardName: String) {
 
             if (state.isLoading && displayedPosts.isEmpty()) {
                 Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    CircularProgressIndicator(color = Primary)
+                    if (!state.loadInProgress) {
+                        CircularProgressIndicator(color = Primary)
+                    }
                 }
                 return@Column
             }

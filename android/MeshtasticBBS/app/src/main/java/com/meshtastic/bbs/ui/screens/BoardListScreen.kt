@@ -38,6 +38,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -186,6 +187,12 @@ fun BoardListScreen(vm: BbsViewModel) {
                 },
             )
 
+            LoadingTransferProgress(
+                active = state.loadInProgress,
+                stage = state.loadStage,
+                progress = state.loadProgress,
+            )
+
             if (state.isLoading && state.boards.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = Primary)
@@ -289,6 +296,40 @@ fun BoardListScreen(vm: BbsViewModel) {
             contentAlignment = Alignment.BottomCenter,
         ) {
             Snackbar { Text(msg) }
+        }
+    }
+}
+
+@Composable
+fun LoadingTransferProgress(active: Boolean, stage: String, progress: Int) {
+    if (!active) return
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        color = SurfaceContainer,
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                stage.ifBlank { "正在接收資料" },
+                color = OnSurface,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            LinearProgressIndicator(
+                progress = { progress.coerceIn(0, 100) / 100f },
+                modifier = Modifier.fillMaxWidth(),
+                color = Primary,
+            )
+            Text(
+                "${progress.coerceIn(0, 100)}%",
+                color = OnSurfaceVariant,
+                style = MaterialTheme.typography.labelSmall,
+            )
         }
     }
 }

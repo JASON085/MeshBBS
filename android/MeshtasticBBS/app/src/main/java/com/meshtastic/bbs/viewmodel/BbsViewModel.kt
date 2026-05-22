@@ -73,6 +73,9 @@ data class BbsUiState(
     val submitInProgress: Boolean = false,
     val submitStage: String = "",
     val submitProgress: Int = 0,
+    val loadInProgress: Boolean = false,
+    val loadStage: String = "",
+    val loadProgress: Int = 0,
 )
 
 class BbsViewModel(app: Application) : AndroidViewModel(app) {
@@ -570,6 +573,16 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
 
+            is BbsEvent.LoadProgress -> {
+                _state.update {
+                    it.copy(
+                        loadInProgress = event.active,
+                        loadStage = if (event.active) event.stage else "",
+                        loadProgress = if (event.active) event.progress.coerceIn(0, 100) else 0,
+                    )
+                }
+            }
+
             is BbsEvent.SearchResults -> {
                 _state.update {
                     it.copy(
@@ -621,6 +634,9 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
                         submitInProgress = false,
                         submitStage = "",
                         submitProgress = 0,
+                        loadInProgress = false,
+                        loadStage = "",
+                        loadProgress = 0,
                     )
                 }
             }

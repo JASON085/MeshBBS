@@ -21,6 +21,8 @@ import java.nio.charset.Charset
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.Deflater
 import java.util.zip.Inflater
@@ -35,8 +37,9 @@ class MeshtasticRepository(private val context: Context) {
         const val EXTRA_PACKET = "$MESH_PACKAGE.DATA_PACKET"
         const val EXTRA_PAYLOAD = "$MESH_PACKAGE.Payload"
         const val BBS_APP = 257
-        const val BUILD = "b0604a"
+        const val BUILD = "b0604h"
         private val BBS_PRIVATE_PREFIX = "MBBS1".toByteArray(Charsets.UTF_8)
+        private val BBS_BINARY_PREFIX = "MBBS2|".toByteArray(Charsets.UTF_8)
         private val MESH_CHAT_PREFIX = "MBCHAT1".toByteArray(Charsets.UTF_8)
         private const val NODEINFO_APP = 4
         private const val REQUEST_CHUNK_CHARS = 180
@@ -53,10 +56,14 @@ class MeshtasticRepository(private val context: Context) {
     private val pending = ConcurrentHashMap<String, PendingChunk>()
     private val completed = LinkedHashSet<String>()
     private val requestSender = Executors.newSingleThreadExecutor()
+    private val heartbeatExecutor = Executors.newSingleThreadScheduledExecutor()
+    private var heartbeatTask: ScheduledFuture<*>? = null
 
     private data class PendingChunk(
         val chunks: MutableMap<Int, String> = ConcurrentHashMap(),
         var total: Int = -1,
+        val cmd: String = "",
+        val stage: String = "",
     )
 
     private data class NodeBundleMeta(
@@ -179,6 +186,7 @@ class MeshtasticRepository(private val context: Context) {
 
         awaitClose {
             debug("connect() closed")
+            stopHeartbeat()
             MeshPacketReceiver.handler = null
             runCatching { context.unregisterReceiver(dataReceiver) }
             runCatching { context.unbindService(serviceConn) }
@@ -189,6 +197,7 @@ class MeshtasticRepository(private val context: Context) {
 
     fun disconnect() {
         debug("disconnect() called")
+        stopHeartbeat()
         meshService = null
     }
 
@@ -277,6 +286,10 @@ class MeshtasticRepository(private val context: Context) {
             return null
         }
         handleMbbs2(bytes)?.let { return it }
+        if (bytes.startsWithPrefix(BBS_BINARY_PREFIX)) {
+            debug("ignore raw MBBS2 packet from=${packet.from} size=${bytes.size}")
+            return null
+        }
         val text = bytes.toString(Charsets.UTF_8)
         val fromId = packet.from.orEmpty()
         if (fromId.isNotBlank() && fromId != DataPacket.ID_LOCAL && fromId != myNodeId) {
@@ -339,6 +352,10 @@ class MeshtasticRepository(private val context: Context) {
         val entry = pending.getOrPut(seq) { PendingChunk() }
         entry.chunks[idx] = Base64.encodeToString(bytes.copyOfRange(headerEnd + 1, bytes.size), Base64.NO_WRAP)
         entry.total = total
+        if (entry.stage.isNotBlank()) {
+            val progress = (20 + ((entry.chunks.size * 75) / total.coerceAtLeast(1))).coerceAtMost(95)
+            emit(BbsEvent.LoadProgress("${entry.stage} ${entry.chunks.size}/$total", progress, true))
+        }
         if (entry.chunks.size < total) return null
 
         completed.add(seq)
@@ -351,8 +368,11 @@ class MeshtasticRepository(private val context: Context) {
             compressed.write(Base64.decode(chunk, Base64.DEFAULT))
         }
         return try {
-            parseJson(JSONObject(String(zlibDecompress(compressed.toByteArray()), Charsets.UTF_8)))
+            val event = parseJson(JSONObject(String(zlibDecompress(compressed.toByteArray()), Charsets.UTF_8)))
+            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
+            event
         } catch (e: Exception) {
+            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
             BbsEvent.ServerError("BBS 回應解析失敗: ${e.message}")
         }
     }
@@ -360,6 +380,7 @@ class MeshtasticRepository(private val context: Context) {
     private fun handleIncoming(text: String, fromId: String): BbsEvent? {
         return when {
             text.startsWith("BBS:RES:") -> handleBbsRes(text)
+            text.startsWith("MBBS2|") -> null
             !text.startsWith("BBS:") -> BbsEvent.NewMeshMessage(
                 MeshMessage(fromId, fromId.takeLast(6), text, "")
             )
@@ -384,6 +405,10 @@ class MeshtasticRepository(private val context: Context) {
         val entry = pending.getOrPut(seq) { PendingChunk() }
         entry.chunks[idx] = data
         entry.total = total
+        if (entry.stage.isNotBlank()) {
+            val progress = (20 + ((entry.chunks.size * 75) / total.coerceAtLeast(1))).coerceAtMost(95)
+            emit(BbsEvent.LoadProgress("${entry.stage} ${entry.chunks.size}/$total", progress, true))
+        }
         if (entry.chunks.size < total) return null
 
         completed.add(seq)
@@ -396,8 +421,11 @@ class MeshtasticRepository(private val context: Context) {
                 zlibDecompress(Base64.decode(joined, Base64.DEFAULT)),
                 Charsets.UTF_8,
             )
-            parseJson(JSONObject(decompressed))
+            val event = parseJson(JSONObject(decompressed))
+            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
+            event
         } catch (e: Exception) {
+            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
             BbsEvent.ServerError("BBS 回應解析失敗: ${e.message}")
         }
     }
@@ -535,6 +563,7 @@ class MeshtasticRepository(private val context: Context) {
 
     fun setCurrentUser(user: UserInfo) {
         currentUser = user
+        startHeartbeat()
     }
 
     fun login(name: String, password: String) {
@@ -575,15 +604,53 @@ class MeshtasticRepository(private val context: Context) {
     fun searchPosts(query: String, field: String = "title", board: String? = null) =
         sendReq("SEARCH", "$field:${board ?: ""}:$query")
 
-    fun logout(nodeId: String, name: String) = sendReq("LOGOUT", name)
+    fun logout(nodeId: String, name: String) {
+        stopHeartbeat()
+        sendReq("LOGOUT", name)
+    }
+
+    private fun startHeartbeat() {
+        stopHeartbeat()
+        val user = currentUser ?: return
+        heartbeatTask = heartbeatExecutor.scheduleAtFixedRate(
+            {
+                if (meshService == null) return@scheduleAtFixedRate
+                sendReq("HEARTBEAT", user.name)
+            },
+            60L,
+            60L,
+            TimeUnit.SECONDS,
+        )
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatTask?.cancel(false)
+        heartbeatTask = null
+    }
 
     private fun nextSeq() = seqCounter.getAndIncrement().toString()
 
     private fun sendReq(cmd: String, args: String = "") {
         val seq = nextSeq()
-        pending[seq] = PendingChunk()
-        comm("SEND BBS:REQ seq=$seq cmd=$cmd to=$serverNodeId args=${args.take(120)}")
+        val stage = loadStageFor(cmd)
+        pending[seq] = PendingChunk(cmd = cmd, stage = stage)
+        if (stage.isNotBlank()) {
+            emit(BbsEvent.LoadProgress("正在送出請求", 5, true))
+        }
+        val preview = when (cmd) {
+            "LOGIN" -> "<redacted>"
+            "CHPASS" -> "<redacted>"
+            else -> args.take(120)
+        }
+        comm("SEND BBS:REQ seq=$seq cmd=$cmd to=$serverNodeId args=$preview")
         sendRaw("BBS:REQ:$seq:$cmd:$args")
+    }
+
+    private fun loadStageFor(cmd: String): String = when (cmd.uppercase()) {
+        "LIST" -> "正在接收討論板列表"
+        "POSTS" -> "正在接收文章列表"
+        "READ" -> "正在接收文章內容"
+        else -> ""
     }
 
     private fun sendCompressedReq(cmd: String, args: String, compressStage: String) {
