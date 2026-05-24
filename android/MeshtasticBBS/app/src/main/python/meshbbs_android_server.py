@@ -1048,7 +1048,7 @@ class AndroidServerCore:
 
         if cmd in ("LIST", "LIST2"):
             boards = [
-                [item["name"], item["title"], item["post_count"], item["moderator"], item["moderator_id"]]
+                [item["name"], item["title"], item["post_count"]]
                 for item in self.get_boards()
             ]
             return _json_dumps({"t": "B", "b": boards})

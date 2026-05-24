@@ -39,6 +39,12 @@ object ServerHostStore {
         }
     }
 
+    fun setHopLimit(hopLimit: Int) {
+        _state.update { it.copy(hopLimit = hopLimit.coerceIn(1, 7)) }
+    }
+
+    fun currentHopLimit(): Int = _state.value.hopLimit
+
     fun setDashboard(dashboard: ServerDashboard) {
         _state.update { it.copy(dashboard = dashboard) }
     }

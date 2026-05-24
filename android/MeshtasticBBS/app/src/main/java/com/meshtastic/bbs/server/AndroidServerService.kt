@@ -36,7 +36,8 @@ class AndroidServerService : Service() {
         private const val ACTION_START = "com.meshtastic.bbs.server.START"
         private const val ACTION_STOP = "com.meshtastic.bbs.server.STOP"
         private const val ACTION_REFRESH = "com.meshtastic.bbs.server.REFRESH"
-        private const val MAX_HELP_PACKET_BYTES = 237
+        private const val MAX_HELP_PACKET_BYTES = 180
+        private const val COMPRESSED_REQUEST_TIMEOUT_MS = 90_000L
 
         fun start(context: Context) {
             val intent = Intent(context, AndroidServerService::class.java).setAction(ACTION_START)
@@ -69,6 +70,7 @@ class AndroidServerService : Service() {
         val cmd: String,
         val total: Int,
         val chunks: MutableMap<Int, String> = ConcurrentHashMap(),
+        var updatedAtMs: Long = SystemClock.elapsedRealtime(),
     )
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -198,11 +200,15 @@ class AndroidServerService : Service() {
         val cmd = parts[3].uppercase()
         val index = parts[4].toIntOrNull() ?: return
         val total = parts[5].toIntOrNull() ?: return
+        if (total <= 0 || index !in 0 until total) return
         val chunk = parts[6]
+        val now = SystemClock.elapsedRealtime()
+        pruneStaleCompressedRequests(now)
         val key = "$fromId:$seq"
         val pending = pendingCompressedRequests.getOrPut(key) {
-            PendingCompressedRequest(cmd = cmd, total = total)
+            PendingCompressedRequest(cmd = cmd, total = total, updatedAtMs = now)
         }
+        pending.updatedAtMs = now
         pending.chunks[index] = chunk
         if (pending.chunks.size < pending.total) return
 
@@ -237,6 +243,13 @@ class AndroidServerService : Service() {
         )
     }
 
+    private fun pruneStaleCompressedRequests(now: Long) {
+        val staleKeys = pendingCompressedRequests.entries
+            .filter { (_, pending) -> now - pending.updatedAtMs > COMPRESSED_REQUEST_TIMEOUT_MS }
+            .map { it.key }
+        staleKeys.forEach(pendingCompressedRequests::remove)
+    }
+
     private fun rememberRequest(key: String): Boolean {
         if (!recentRequestSet.add(key)) return false
         recentRequests.addLast(key)
@@ -260,7 +273,13 @@ class AndroidServerService : Service() {
         recentPlainText[dedupeKey] = now
         recentPlainText.entries.removeAll { now - it.value > 15_000L }
         ServerHostStore.incrementRequest("TXT <- ${fromId.takeLast(6)}")
-        repo?.sendPlainTexts(fromId, helpMessagesCompact(), pauseMs = 3_000L)
+        repo?.sendPlainTexts(
+            destId = fromId,
+            texts = mqttSafeHelpMessages(),
+            initialDelayMs = 900L,
+            pauseMs = 3_600L,
+            finalDelayMs = 1_200L,
+        )
     }
 
     private fun helpMessagesCompact(): List<String> = listOf(
@@ -294,6 +313,39 @@ class AndroidServerService : Service() {
         val bytes = text.toByteArray(Charsets.UTF_8).size
         if (bytes > MAX_HELP_PACKET_BYTES) {
             error("Help packet ${index + 1} exceeds Meshtastic payload limit: $bytes bytes")
+        }
+        text
+    }
+
+    private fun mqttSafeHelpMessages(): List<String> = listOf(
+        """
+        [1/4] MeshBBS 使用
+        私訊 Android Server
+        APP: http://reurl.cc/Z24Wql
+        LOGIN:<帳號>:<密碼>
+        LOGOUT
+        """.trimIndent(),
+        """
+        [2/4] 看板 / 文章
+        LIST
+        POSTS:<看板>:<頁>
+        READ:<文章號>
+        PUSH:<文章號>
+        """.trimIndent(),
+        """
+        [3/4] 搜尋 / 發文
+        SEARCH:<title|author>:<看板>:<關鍵字>
+        POST:<看板>:<作者>:<標題>:<內容>
+        """.trimIndent(),
+        """
+        [4/4] 回覆 / Relay
+        REPLY:<文章號>:<作者>:<內容>
+        BBS:REQ:<序號>:<命令>:<參數>
+        """.trimIndent(),
+    ).mapIndexed { index, text ->
+        val bytes = text.toByteArray(Charsets.UTF_8).size
+        if (bytes > MAX_HELP_PACKET_BYTES) {
+            error("MQTT help packet ${index + 1} exceeds limit: $bytes bytes")
         }
         text
     }

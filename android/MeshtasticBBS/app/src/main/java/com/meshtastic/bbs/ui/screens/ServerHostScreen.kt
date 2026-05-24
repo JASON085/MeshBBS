@@ -1,5 +1,6 @@
 ﻿package com.meshtastic.bbs.ui.screens
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -8,13 +9,19 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -58,17 +66,22 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.meshtastic.bbs.server.AndroidServerService
@@ -95,6 +108,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.meshtastic.bbs.data.MeshtasticRepository
 import org.json.JSONObject
+import kotlin.math.roundToInt
 
 private data class BoardEditorState(
     val originalName: String? = null,
@@ -125,6 +139,7 @@ private data class ConfirmState(
 @Composable
 fun ServerHostScreen(onExit: () -> Unit) {
     val context = LocalContext.current
+    val activity = context as? Activity
     val scope = rememberCoroutineScope()
     val state by ServerHostStore.state.collectAsStateWithLifecycle()
     var flashMessage by remember { mutableStateOf<String?>(null) }
@@ -134,6 +149,8 @@ fun ServerHostScreen(onExit: () -> Unit) {
     var adminPasswordEditor by remember { mutableStateOf<PasswordEditorState?>(null) }
     var confirmState by remember { mutableStateOf<ConfirmState?>(null) }
     var pendingBackupExport by remember { mutableStateOf<ServerBackupEntry?>(null) }
+    var lockScreenActive by rememberSaveable { mutableStateOf(false) }
+    var savedBrightness by remember { mutableStateOf<Float?>(null) }
 
     fun performAction(logLine: String, action: suspend () -> Unit) {
         scope.launch {
@@ -187,6 +204,44 @@ fun ServerHostScreen(onExit: () -> Unit) {
         }
     }
 
+    LaunchedEffect(state.isRunning) {
+        if (!state.isRunning && lockScreenActive) {
+            lockScreenActive = false
+        }
+    }
+
+    DisposableEffect(activity, lockScreenActive) {
+        val window = activity?.window
+        if (window != null) {
+            if (lockScreenActive) {
+                if (savedBrightness == null) {
+                    savedBrightness = window.attributes.screenBrightness
+                }
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                val attrs = window.attributes
+                attrs.screenBrightness = 0.03f
+                window.attributes = attrs
+            } else {
+                val attrs = window.attributes
+                attrs.screenBrightness = savedBrightness ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                window.attributes = attrs
+                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                savedBrightness = null
+            }
+        }
+        onDispose {
+            if (window != null) {
+                val attrs = window.attributes
+                attrs.screenBrightness = savedBrightness ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                window.attributes = attrs
+                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+            savedBrightness = null
+        }
+    }
+
+    BackHandler(enabled = lockScreenActive) {}
+
     Scaffold(
         containerColor = Background,
         topBar = {
@@ -211,155 +266,178 @@ fun ServerHostScreen(onExit: () -> Unit) {
             )
         },
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                .padding(padding),
         ) {
-            StatusStrip(state.isRunning, state.meshBound, state.myNodeId)
-            ActionRow(context, state.isRunning || state.isStarting)
-            StatRow(state.dashboard.stats)
-            DbCard(
-                dbPath = state.dashboard.dbPath,
-                backupDir = state.dashboard.backupDir,
-                lastBackupPath = state.dashboard.lastBackupPath,
-                backups = state.dashboard.backups,
-                meshMessageCount = state.dashboard.stats.meshMessages,
-                relayClients = state.dashboard.relayClients,
-                adminClients = state.dashboard.adminClients,
-                requestCount = state.requestCount,
-                onBackup = {
-                    performAction("DB 備份完成") {
-                        val path = withContext(Dispatchers.IO) {
-                            PythonServerBridge(context).backupDatabase()
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                StatusStrip(state.isRunning, state.meshBound, state.myNodeId)
+                ActionRow(
+                    context = context,
+                    active = state.isRunning || state.isStarting,
+                    hopLimit = state.hopLimit,
+                    locked = lockScreenActive,
+                    onLock = { lockScreenActive = true },
+                    onHopLimitChange = { hopLimit ->
+                        if (hopLimit != state.hopLimit) {
+                            ServerHostStore.setHopLimit(hopLimit)
+                            ServerHostStore.appendLog("Meshtastic hopLimit 已設為 $hopLimit")
                         }
-                        ServerHostStore.appendLog("DB 備份完成：$path")
-                    }
-                },
-                onImport = {
-                    importDbLauncher.launch(arrayOf("*/*"))
-                },
-                onClearChatCache = {
-                    performAction("站內聊天暫存已清除") {
-                        withContext(Dispatchers.IO) {
-                            PythonServerBridge(context).adminAction("clear_mesh_messages")
+                    },
+                )
+                StatRow(state.dashboard.stats)
+                DbCard(
+                    dbPath = state.dashboard.dbPath,
+                    backupDir = state.dashboard.backupDir,
+                    lastBackupPath = state.dashboard.lastBackupPath,
+                    backups = state.dashboard.backups,
+                    meshMessageCount = state.dashboard.stats.meshMessages,
+                    relayClients = state.dashboard.relayClients,
+                    adminClients = state.dashboard.adminClients,
+                    requestCount = state.requestCount,
+                    onBackup = {
+                        performAction("DB 備份完成") {
+                            val path = withContext(Dispatchers.IO) {
+                                PythonServerBridge(context).backupDatabase()
+                            }
+                            ServerHostStore.appendLog("DB 備份完成：$path")
                         }
-                    }
-                },
-                onExportBackup = { backup ->
-                    pendingBackupExport = backup
-                    exportBackupLauncher.launch(backup.name)
-                },
-                onDeleteBackup = { backup ->
-                    confirmState = ConfirmState(
-                        title = "刪除備份檔",
-                        message = "確定要刪除 ${backup.name} 嗎？此操作無法復原。",
-                        confirmLabel = "刪除",
-                    ) {
-                        val name = withContext(Dispatchers.IO) {
-                            PythonServerBridge(context).deleteBackup(backup.path)
+                    },
+                    onImport = {
+                        importDbLauncher.launch(arrayOf("*/*"))
+                    },
+                    onClearChatCache = {
+                        performAction("站內聊天暫存已清除") {
+                            withContext(Dispatchers.IO) {
+                                PythonServerBridge(context).adminAction("clear_mesh_messages")
+                            }
                         }
-                        ServerHostStore.appendLog("DB 備份已刪除：$name")
-                    }
-                },
-            )
-            AdminsCard(
-                admins = state.dashboard.admins,
-                onAdd = { adminEditor = AdminEditorState() },
-                onChangePassword = { admin ->
-                    adminPasswordEditor = PasswordEditorState(
-                        id = admin.id.toString(),
-                        title = "變更管理員密碼：${admin.username}",
-                    )
-                },
-                onDelete = { admin ->
-                    confirmState = ConfirmState(
-                        title = "刪除管理員",
-                        message = "確定要刪除 ${admin.username} 嗎？",
-                        confirmLabel = "刪除",
-                    ) {
-                        withContext(Dispatchers.IO) {
-                            PythonServerBridge(context).adminAction(
-                                "delete_admin",
-                                JSONObject().put("admin_id", admin.id),
-                            )
+                    },
+                    onExportBackup = { backup ->
+                        pendingBackupExport = backup
+                        exportBackupLauncher.launch(backup.name)
+                    },
+                    onDeleteBackup = { backup ->
+                        confirmState = ConfirmState(
+                            title = "刪除備份檔",
+                            message = "確定要刪除 ${backup.name} 嗎？此操作無法復原。",
+                            confirmLabel = "刪除",
+                        ) {
+                            val name = withContext(Dispatchers.IO) {
+                                PythonServerBridge(context).deleteBackup(backup.path)
+                            }
+                            ServerHostStore.appendLog("DB 備份已刪除：$name")
                         }
-                    }
-                },
-            )
-            BoardsCard(
-                boards = state.dashboard.boards,
-                onAdd = { boardEditor = BoardEditorState() },
-                onEdit = { board ->
-                    boardEditor = BoardEditorState(
-                        originalName = board.name,
-                        name = board.name,
-                        title = board.title,
-                        moderator = board.moderator,
-                    )
-                },
-                onDelete = { board ->
-                    confirmState = ConfirmState(
-                        title = "刪除看板",
-                        message = "確定要刪除 ${board.title} 嗎？\n刪除後文章與回覆也會一起移除。",
-                        confirmLabel = "刪除",
-                    ) {
-                        withContext(Dispatchers.IO) {
-                            PythonServerBridge(context).adminAction(
-                                "delete_board",
-                                JSONObject().put("name", board.name),
-                            )
+                    },
+                )
+                AdminsCard(
+                    admins = state.dashboard.admins,
+                    onAdd = { adminEditor = AdminEditorState() },
+                    onChangePassword = { admin ->
+                        adminPasswordEditor = PasswordEditorState(
+                            id = admin.id.toString(),
+                            title = "變更管理員密碼：${admin.username}",
+                        )
+                    },
+                    onDelete = { admin ->
+                        confirmState = ConfirmState(
+                            title = "刪除管理員",
+                            message = "確定要刪除 ${admin.username} 嗎？",
+                            confirmLabel = "刪除",
+                        ) {
+                            withContext(Dispatchers.IO) {
+                                PythonServerBridge(context).adminAction(
+                                    "delete_admin",
+                                    JSONObject().put("admin_id", admin.id),
+                                )
+                            }
                         }
-                    }
-                },
-            )
-            UsersCard(
-                users = state.dashboard.users,
-                onToggleBan = { user ->
-                    val targetBanned = !user.banned
-                    val label = if (targetBanned) "停權" else "解除停權"
-                    confirmState = ConfirmState(
-                        title = label,
-                        message = "確定要將 ${user.name} 設為 $label 嗎？",
-                        confirmLabel = label,
-                    ) {
-                        withContext(Dispatchers.IO) {
-                            PythonServerBridge(context).adminAction(
-                                "set_user_ban",
-                                JSONObject()
-                                    .put("node_id", user.nodeId)
-                                    .put("banned", targetBanned),
-                            )
+                    },
+                )
+                BoardsCard(
+                    boards = state.dashboard.boards,
+                    onAdd = { boardEditor = BoardEditorState() },
+                    onEdit = { board ->
+                        boardEditor = BoardEditorState(
+                            originalName = board.name,
+                            name = board.name,
+                            title = board.title,
+                            moderator = board.moderator,
+                        )
+                    },
+                    onDelete = { board ->
+                        confirmState = ConfirmState(
+                            title = "刪除看板",
+                            message = "確定要刪除 ${board.title} 嗎？\n刪除後文章與回覆也會一起移除。",
+                            confirmLabel = "刪除",
+                        ) {
+                            withContext(Dispatchers.IO) {
+                                PythonServerBridge(context).adminAction(
+                                    "delete_board",
+                                    JSONObject().put("name", board.name),
+                                )
+                            }
                         }
-                    }
-                },
-                onSetPassword = { user ->
-                    userPasswordEditor = PasswordEditorState(
-                        id = user.nodeId,
-                        title = "設定使用者密碼：${user.name}",
-                    )
-                },
-                onDeleteUser = { user ->
-                    confirmState = ConfirmState(
-                        title = "刪除使用者",
-                        message = "確定要刪除 ${user.name} 嗎？\n只會刪除使用者帳號資料，不會刪除既有文章與回覆。",
-                        confirmLabel = "刪除使用者",
-                    ) {
-                        withContext(Dispatchers.IO) {
-                            PythonServerBridge(context).adminAction(
-                                "delete_user",
-                                JSONObject().put("node_id", user.nodeId),
-                            )
+                    },
+                )
+                UsersCard(
+                    users = state.dashboard.users,
+                    onToggleBan = { user ->
+                        val targetBanned = !user.banned
+                        val label = if (targetBanned) "停權" else "解除停權"
+                        confirmState = ConfirmState(
+                            title = label,
+                            message = "確定要將 ${user.name} 設為 $label 嗎？",
+                            confirmLabel = label,
+                        ) {
+                            withContext(Dispatchers.IO) {
+                                PythonServerBridge(context).adminAction(
+                                    "set_user_ban",
+                                    JSONObject()
+                                        .put("node_id", user.nodeId)
+                                        .put("banned", targetBanned),
+                                )
+                            }
                         }
-                    }
-                },
-            )
-            RecentPostsCard(state.dashboard.recentPosts)
-            LogsCardFull(state.logs)
-            Spacer(Modifier.height(12.dp))
+                    },
+                    onSetPassword = { user ->
+                        userPasswordEditor = PasswordEditorState(
+                            id = user.nodeId,
+                            title = "設定使用者密碼：${user.name}",
+                        )
+                    },
+                    onDeleteUser = { user ->
+                        confirmState = ConfirmState(
+                            title = "刪除使用者",
+                            message = "確定要刪除 ${user.name} 嗎？\n只會刪除使用者帳號資料，不會刪除既有文章與回覆。",
+                            confirmLabel = "刪除使用者",
+                        ) {
+                            withContext(Dispatchers.IO) {
+                                PythonServerBridge(context).adminAction(
+                                    "delete_user",
+                                    JSONObject().put("node_id", user.nodeId),
+                                )
+                            }
+                        }
+                    },
+                )
+                RecentPostsCard(state.dashboard.recentPosts)
+                LogsCardFull(state.logs)
+                Spacer(Modifier.height(12.dp))
+            }
+
+            if (lockScreenActive) {
+                ScreenLockOverlay(
+                    onUnlock = { lockScreenActive = false },
+                )
+            }
         }
     }
 
@@ -499,22 +577,138 @@ private fun StatusStrip(isRunning: Boolean, meshBound: Boolean, myNodeId: String
 }
 
 @Composable
-private fun ActionRow(context: Context, active: Boolean) {
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        ElevatedButton(onClick = { AndroidServerService.start(context) }) {
-            Icon(Icons.Default.PlayArrow, null)
-            Spacer(Modifier.size(8.dp))
-            Text(if (active) "執行中" else "啟動")
+private fun ActionRow(
+    context: Context,
+    active: Boolean,
+    hopLimit: Int,
+    locked: Boolean,
+    onLock: () -> Unit,
+    onHopLimitChange: (Int) -> Unit,
+) {
+    var hopMenuExpanded by remember(hopLimit) { mutableStateOf(false) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            ElevatedButton(onClick = { AndroidServerService.start(context) }) {
+                Icon(Icons.Default.PlayArrow, null)
+                Spacer(Modifier.size(8.dp))
+                Text(if (active) "執行中" else "啟動")
+            }
+            ElevatedButton(onClick = { AndroidServerService.stop(context) }) {
+                Icon(Icons.Default.Stop, null)
+                Spacer(Modifier.size(8.dp))
+                Text("停止")
+            }
+            ElevatedButton(onClick = { requestIgnoreBatteryOptimizations(context) }) {
+                Icon(Icons.Default.LockOpen, null)
+                Spacer(Modifier.size(8.dp))
+                Text("忽略電池優化")
+            }
         }
-        ElevatedButton(onClick = { AndroidServerService.stop(context) }) {
-            Icon(Icons.Default.Stop, null)
-            Spacer(Modifier.size(8.dp))
-            Text("停止")
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            ElevatedButton(
+                onClick = onLock,
+                enabled = active && !locked,
+            ) {
+                Icon(Icons.Default.Lock, null)
+                Spacer(Modifier.size(8.dp))
+                Text(if (locked) "已鎖定" else "鎖屏")
+            }
+            Box(modifier = Modifier.width(148.dp)) {
+                OutlinedTextField(
+                    value = hopLimit.toString(),
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Hop Limit") },
+                    trailingIcon = {
+                        IconButton(onClick = { hopMenuExpanded = true }) {
+                            Icon(Icons.Default.ArrowDropDown, null)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                DropdownMenu(
+                    expanded = hopMenuExpanded,
+                    onDismissRequest = { hopMenuExpanded = false },
+                ) {
+                    (1..7).forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.toString()) },
+                            onClick = {
+                                onHopLimitChange(option)
+                                hopMenuExpanded = false
+                            },
+                        )
+                    }
+                }
+            }
         }
-        ElevatedButton(onClick = { requestIgnoreBatteryOptimizations(context) }) {
-            Icon(Icons.Default.LockOpen, null)
-            Spacer(Modifier.size(8.dp))
-            Text("忽略電池優化")
+    }
+}
+
+@Composable
+private fun ScreenLockOverlay(onUnlock: () -> Unit) {
+    var dragOffsetPx by remember { mutableStateOf(0f) }
+    val unlockThresholdPx = with(LocalDensity.current) { 140.dp.toPx() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.88f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {},
+                ),
+        )
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("鎖屏中", color = Color.White, fontWeight = FontWeight.Black, style = MaterialTheme.typography.headlineSmall)
+            Text("長按鎖頭後往下滑動即可解鎖", color = Color.White.copy(alpha = 0.78f), style = MaterialTheme.typography.bodyMedium)
+            Surface(
+                modifier = Modifier
+                    .offset { IntOffset(0, dragOffsetPx.roundToInt()) }
+                    .pointerInput(unlockThresholdPx) {
+                        detectDragGesturesAfterLongPress(
+                            onDragCancel = { dragOffsetPx = 0f },
+                            onDragEnd = {
+                                if (dragOffsetPx >= unlockThresholdPx) {
+                                    onUnlock()
+                                }
+                                dragOffsetPx = 0f
+                            },
+                        ) { change, dragAmount ->
+                            change.consume()
+                            dragOffsetPx = (dragOffsetPx + dragAmount.y).coerceIn(0f, unlockThresholdPx * 1.4f)
+                        }
+                    },
+                shape = RoundedCornerShape(999.dp),
+                color = Color.White.copy(alpha = 0.14f),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = "鎖屏",
+                        tint = Color.White,
+                        modifier = Modifier.size(52.dp),
+                    )
+                    Text("往下滑動解鎖", color = Color.White, style = MaterialTheme.typography.labelLarge)
+                }
+            }
         }
     }
 }

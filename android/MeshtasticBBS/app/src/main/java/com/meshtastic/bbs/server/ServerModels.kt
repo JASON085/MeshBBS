@@ -67,6 +67,7 @@ data class ServerHostState(
     val isRunning: Boolean = false,
     val isStarting: Boolean = false,
     val meshBound: Boolean = false,
+    val hopLimit: Int = 4,
     val myNodeId: String = "",
     val status: String = "已停止",
     val requestCount: Int = 0,

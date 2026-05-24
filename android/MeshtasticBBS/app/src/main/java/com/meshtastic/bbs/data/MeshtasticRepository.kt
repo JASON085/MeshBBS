@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Base64
 import androidx.core.content.ContextCompat
 import com.geeksville.mesh.NodeInfo
@@ -37,12 +38,15 @@ class MeshtasticRepository(private val context: Context) {
         const val EXTRA_PACKET = "$MESH_PACKAGE.DATA_PACKET"
         const val EXTRA_PAYLOAD = "$MESH_PACKAGE.Payload"
         const val BBS_APP = 257
-        const val BUILD = "b0604h"
+        const val BUILD = "b0604l"
         private val BBS_PRIVATE_PREFIX = "MBBS1".toByteArray(Charsets.UTF_8)
         private val BBS_BINARY_PREFIX = "MBBS2|".toByteArray(Charsets.UTF_8)
         private val MESH_CHAT_PREFIX = "MBCHAT1".toByteArray(Charsets.UTF_8)
         private const val NODEINFO_APP = 4
         private const val REQUEST_CHUNK_CHARS = 180
+        private const val REQUEST_CHUNK_PAUSE_MS = 320L
+        private const val PACKET_HOP_LIMIT = 4
+        private const val PENDING_CHUNK_TIMEOUT_MS = 90_000L
     }
 
     private var meshService: IMeshService? = null
@@ -64,6 +68,7 @@ class MeshtasticRepository(private val context: Context) {
         var total: Int = -1,
         val cmd: String = "",
         val stage: String = "",
+        var updatedAtMs: Long = SystemClock.elapsedRealtime(),
     )
 
     private data class NodeBundleMeta(
@@ -344,12 +349,16 @@ class MeshtasticRepository(private val context: Context) {
         val seq = parts[2]
         val idx = parts[3].toIntOrNull() ?: return null
         val total = parts[4].toIntOrNull() ?: return null
+        if (total <= 0 || idx !in 0 until total) return null
         comm("RECV MBBS2 seq=$seq chunk=${idx + 1}/$total from=$destId")
 
         if (myNodeId.isNotBlank() && destId != myNodeId) return null
         if (seq in completed) return null
 
+        val now = SystemClock.elapsedRealtime()
+        pruneStalePendingChunks(now)
         val entry = pending.getOrPut(seq) { PendingChunk() }
+        entry.updatedAtMs = now
         entry.chunks[idx] = Base64.encodeToString(bytes.copyOfRange(headerEnd + 1, bytes.size), Base64.NO_WRAP)
         entry.total = total
         if (entry.stage.isNotBlank()) {
@@ -396,13 +405,17 @@ class MeshtasticRepository(private val context: Context) {
         val seq = parts[3]
         val idx = parts[4].toIntOrNull() ?: return null
         val total = parts[5].toIntOrNull() ?: return null
+        if (total <= 0 || idx !in 0 until total) return null
         val data = parts[6]
         comm("RECV BBS:RES seq=$seq chunk=${idx + 1}/$total from=$destId len=${data.length}")
 
         if (myNodeId.isNotBlank() && destId != myNodeId) return null
         if (seq in completed) return null
 
+        val now = SystemClock.elapsedRealtime()
+        pruneStalePendingChunks(now)
         val entry = pending.getOrPut(seq) { PendingChunk() }
+        entry.updatedAtMs = now
         entry.chunks[idx] = data
         entry.total = total
         if (entry.stage.isNotBlank()) {
@@ -442,6 +455,13 @@ class MeshtasticRepository(private val context: Context) {
         }
         inflater.end()
         return out.toByteArray()
+    }
+
+    private fun pruneStalePendingChunks(now: Long) {
+        val staleKeys = pending.entries
+            .filter { (_, entry) -> now - entry.updatedAtMs > PENDING_CHUNK_TIMEOUT_MS }
+            .map { it.key }
+        staleKeys.forEach(pending::remove)
     }
 
     private fun zlibCompress(data: ByteArray): ByteArray {
@@ -669,7 +689,7 @@ class MeshtasticRepository(private val context: Context) {
                     sendRaw("BBS:REQC:$seq:$cmd:$index:$total:$chunk")
                     val progress = 25 + (((index + 1) * 70) / total)
                     emit(BbsEvent.SubmitProgress("正在發送 ${index + 1}/$total", progress.coerceAtMost(95), true))
-                    Thread.sleep(220L)
+                    Thread.sleep(REQUEST_CHUNK_PAUSE_MS)
                 }
                 emit(BbsEvent.SubmitProgress("等待伺服器回應", 100, true))
             }.onFailure { error ->
@@ -690,7 +710,7 @@ class MeshtasticRepository(private val context: Context) {
                     bytes = payload,
                     dataType = BBS_APP,
                     wantAck = false,
-                    hopLimit = 3,
+                    hopLimit = PACKET_HOP_LIMIT,
                     channel = 0,
                 )
             )
@@ -710,7 +730,7 @@ class MeshtasticRepository(private val context: Context) {
                     bytes = text.toByteArray(Charsets.UTF_8),
                     dataType = DataPacket.TEXT_MESSAGE_APP,
                     wantAck = false,
-                    hopLimit = 3,
+                    hopLimit = PACKET_HOP_LIMIT,
                     channel = 0,
                 )
             )
@@ -736,7 +756,7 @@ class MeshtasticRepository(private val context: Context) {
                     bytes = bytes,
                     dataType = BBS_APP,
                     wantAck = false,
-                    hopLimit = 3,
+                    hopLimit = PACKET_HOP_LIMIT,
                     channel = 0,
                 )
             )

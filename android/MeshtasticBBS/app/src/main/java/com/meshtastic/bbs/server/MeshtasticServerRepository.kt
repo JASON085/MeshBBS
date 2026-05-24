@@ -30,6 +30,9 @@ class MeshtasticServerRepository(
         private const val EXTRA_PAYLOAD = "$MESH_PACKAGE.Payload"
         private const val RECEIVER_CLASS = "com.meshtastic.bbs.data.MeshPacketReceiver"
         private const val BBS_APP = 257
+        private const val RESPONSE_CHUNK_BYTES = 160
+        private const val RESPONSE_CHUNK_PAUSE_MS = 420L
+        private const val RESPONSE_FINAL_DELAY_MS = 320L
         private val BBS_PRIVATE_PREFIX =
             byteArrayOf('M'.code.toByte(), 'B'.code.toByte(), 'B'.code.toByte(), 'S'.code.toByte(), '1'.code.toByte())
         private val BBS_BINARY_PREFIX =
@@ -47,6 +50,9 @@ class MeshtasticServerRepository(
     private var dataReceiver: BroadcastReceiver? = null
     private var meshConnectedReceiver: BroadcastReceiver? = null
     private var myNodeId: String = ""
+
+    private val packetHopLimit: Int
+        get() = ServerHostStore.currentHopLimit()
 
     fun connect() {
         registerReceivers()
@@ -67,13 +73,14 @@ class MeshtasticServerRepository(
 
     fun sendResponse(destId: String, seq: String, responseJson: String) {
         val compressed = deflate(responseJson.toByteArray(Charsets.UTF_8))
-        val chunks = compressed.chunkedBytes(178)
+        val chunks = compressed.chunkedBytes(RESPONSE_CHUNK_BYTES)
         val total = chunks.size.coerceAtLeast(1)
         val actualChunks = if (chunks.isEmpty()) listOf(ByteArray(0)) else chunks
         onLog("RES $destId seq=$seq ${compressed.size} bytes $total chunk(s)")
         actualChunks.forEachIndexed { index, chunk ->
             val header = "MBBS2|$destId|$seq|$index|$total\n".toByteArray(Charsets.UTF_8)
-            sendPrivate(header + chunk, destId, logSuccess = false)
+            val pauseMs = if (index < actualChunks.lastIndex) RESPONSE_CHUNK_PAUSE_MS else RESPONSE_FINAL_DELAY_MS
+            sendPrivate(header + chunk, destId, logSuccess = false, pauseMs = pauseMs)
         }
     }
 
@@ -81,23 +88,33 @@ class MeshtasticServerRepository(
         sendPlainTexts(destId, listOf(text))
     }
 
-    fun sendPlainTexts(destId: String, texts: List<String>, pauseMs: Long = 3_000L) {
+    fun sendPlainTexts(
+        destId: String,
+        texts: List<String>,
+        initialDelayMs: Long = 0L,
+        pauseMs: Long = 3_000L,
+        finalDelayMs: Long = 280L,
+    ) {
         sender.execute {
             val messages = texts.filter { it.isNotBlank() }
+            if (messages.isEmpty()) return@execute
+            if (initialDelayMs > 0) {
+                Thread.sleep(initialDelayMs)
+            }
             messages.forEachIndexed { index, text ->
                 val packet = DataPacket(
                     to = destId,
                     bytes = text.toByteArray(Charsets.UTF_8),
                     dataType = DataPacket.TEXT_MESSAGE_APP,
                     from = myNodeId.ifBlank { DataPacket.ID_LOCAL },
-                    hopLimit = 3,
+                    hopLimit = packetHopLimit,
                     channel = 0,
                     wantAck = false,
                 )
                 runCatching { meshService?.send(packet) }
                     .onSuccess { onLog("TXT $destId ${text.take(60)}") }
                     .onFailure { onLog("Send text failed: ${it.message}") }
-                val delayMs = if (index < messages.lastIndex) pauseMs else 280L
+                val delayMs = if (index < messages.lastIndex) pauseMs else finalDelayMs
                 Thread.sleep(delayMs)
             }
         }
@@ -212,21 +229,21 @@ class MeshtasticServerRepository(
         }
     }
 
-    private fun sendPrivate(bytes: ByteArray, to: String, logSuccess: Boolean = true) {
+    private fun sendPrivate(bytes: ByteArray, to: String, logSuccess: Boolean = true, pauseMs: Long = 280L) {
         sender.execute {
             val packet = DataPacket(
                 to = to,
                 bytes = bytes,
                 dataType = BBS_APP,
                 from = myNodeId.ifBlank { DataPacket.ID_LOCAL },
-                hopLimit = 3,
+                hopLimit = packetHopLimit,
                 channel = 0,
                 wantAck = false,
             )
             runCatching { meshService?.send(packet) }
                 .onSuccess { if (logSuccess) onLog("RES $to ${bytes.size} bytes") }
                 .onFailure { onLog("Send failed: ${it.message}") }
-            Thread.sleep(280L)
+            Thread.sleep(pauseMs)
         }
     }
 
