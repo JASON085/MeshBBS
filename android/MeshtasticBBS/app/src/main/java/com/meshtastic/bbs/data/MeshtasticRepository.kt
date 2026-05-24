@@ -38,7 +38,7 @@ class MeshtasticRepository(private val context: Context) {
         const val EXTRA_PACKET = "$MESH_PACKAGE.DATA_PACKET"
         const val EXTRA_PAYLOAD = "$MESH_PACKAGE.Payload"
         const val BBS_APP = 257
-        const val BUILD = "b0604l"
+        const val BUILD = "b0604m"
         private val BBS_PRIVATE_PREFIX = "MBBS1".toByteArray(Charsets.UTF_8)
         private val BBS_BINARY_PREFIX = "MBBS2|".toByteArray(Charsets.UTF_8)
         private val MESH_CHAT_PREFIX = "MBCHAT1".toByteArray(Charsets.UTF_8)

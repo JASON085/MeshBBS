@@ -33,7 +33,7 @@ android {
         minSdk        = 26
         targetSdk     = 34
         versionCode   = 1
-        versionName   = "b0603a"
+        versionName   = "b0604m"
     }
 
     flavorDimensions += "mode"
