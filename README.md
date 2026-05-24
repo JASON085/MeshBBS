@@ -1,5 +1,10 @@
 # Meshtastic BBS
 
+## Quick Download
+
+- [MeshBBS Client APK (b0604l)](https://raw.githubusercontent.com/JASON085/MeshBBS/main/android_downloads/MeshBBS-b0604l.apk)
+- [MeshServer APK (b0604l)](https://raw.githubusercontent.com/JASON085/MeshBBS/main/android_downloads/MeshBBS-server-b0604l.apk)
+
 這是一個以 Meshtastic / LoRa 為通訊基礎的 BBS 專案，主要提供：
 
 - Python BBS Server
