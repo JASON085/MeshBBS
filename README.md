@@ -165,15 +165,3 @@ Android 專案目前採用 flavor 方式輸出兩種 APK：
 專案已提供範例檔：
 
 - `android/MeshtasticBBS/signing/signing.properties.example`
-
-## 上 GitHub 前的安全建議
-
-以下內容建議只留在本機，不要上傳：
-
-- `bbs.db` 與其他 SQLite 資料庫
-- `.env`、`.env.*`
-- Android 簽章檔、keystore、`signing.properties`
-- `build/`、`dist/`、`apk_archive/` 等產物
-- 個人 IDE 設定與暫存檔
-
-本 repo 已透過 `.gitignore` 排除上述常見敏感資料與建置產物。
