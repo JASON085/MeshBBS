@@ -143,10 +143,16 @@ fun PostListScreen(vm: BbsViewModel, boardName: String) {
                 }
             }
 
-            if (state.isLoading && displayedPosts.isEmpty()) {
+            if ((state.isLoading || state.loadInProgress) && displayedPosts.isEmpty()) {
                 Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    if (!state.loadInProgress) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(color = Primary)
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = state.loadStage.ifBlank { "正在接收文章列表" },
+                            color = OnSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
                 return@Column
@@ -166,6 +172,14 @@ fun PostListScreen(vm: BbsViewModel, boardName: String) {
                     if (state.isLoading) {
                         Box(Modifier.fillMaxWidth().padding(16.dp), Alignment.Center) {
                             CircularProgressIndicator(Modifier.size(24.dp), color = Primary, strokeWidth = 2.dp)
+                        }
+                    } else if (displayedPosts.isEmpty()) {
+                        Box(Modifier.fillMaxWidth().padding(24.dp), Alignment.Center) {
+                            Text(
+                                "目前沒有文章",
+                                color = OnSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                     } else if (state.posts.size >= state.postTotal && state.postTotal > 0) {
                         Box(Modifier.fillMaxWidth().padding(16.dp), Alignment.Center) {

@@ -159,6 +159,18 @@ class AndroidServerService : Service() {
     }
 
     private fun handleIncomingRequest(fromId: String, text: String) {
+        if (text.startsWith("BBS:ACK:")) {
+            handleBatchAck(fromId, text)
+            return
+        }
+        if (text.startsWith("BBS:WINACK:")) {
+            handleWindowAck(fromId, text)
+            return
+        }
+        if (text.startsWith("BBS:MISS:")) {
+            handleMissingChunkRequest(fromId, text)
+            return
+        }
         if (text.startsWith("BBS:REQC:")) {
             handleCompressedRequest(fromId, text)
             return
@@ -175,7 +187,7 @@ class AndroidServerService : Service() {
         val args = if (parts.size > 4) parts[4] else ""
         val requestKey = "$fromId:$seq"
         if (!rememberRequest(requestKey)) {
-            ServerHostStore.appendLog("DUP skip seq=$seq from=${fromId.takeLast(6)}")
+            ServerHostStore.appendLog("REQ_DROP reason=duplicate pendingKey=$requestKey from=$fromId seq=$seq cmd=$cmd")
             return
         }
 
@@ -185,7 +197,7 @@ class AndroidServerService : Service() {
         val handledAt = SystemClock.elapsedRealtime()
 
         if (response.isNotBlank() && response != "null") {
-            repo?.sendResponse(fromId, seq, response)
+            repo?.sendResponse(fromId, seq, response, cmd)
         }
         val queuedAt = SystemClock.elapsedRealtime()
         ServerHostStore.appendLog(
@@ -193,26 +205,106 @@ class AndroidServerService : Service() {
         )
     }
 
+    private fun handleMissingChunkRequest(fromId: String, text: String) {
+        val parts = text.split(":", limit = 4)
+        if (parts.size < 4) {
+            ServerHostStore.appendLog("MISS_DROP reason=invalid_parts from=$fromId rawSize=${text.length}")
+            return
+        }
+        val seq = parts[2]
+        val pendingKey = "$fromId:$seq"
+        val missingIndexes = parts[3]
+            .split(",")
+            .mapNotNull { it.trim().toIntOrNull() }
+            .filter { it >= 0 }
+            .distinct()
+            .sorted()
+        if (seq.isBlank() || missingIndexes.isEmpty()) {
+            ServerHostStore.appendLog("MISS_DROP reason=invalid_indexes from=$fromId seq=$seq raw=${parts[3]}")
+            return
+        }
+        ServerHostStore.appendLog(
+            "MISS_REQ from=$fromId seq=$seq pendingKey=$pendingKey missing=${missingIndexes.joinToString(",")}"
+        )
+        repo?.resendResponseChunks(fromId, seq, missingIndexes)
+    }
+
+    private fun handleWindowAck(fromId: String, text: String) {
+        val parts = text.split(":", limit = 4)
+        if (parts.size < 4) {
+            ServerHostStore.appendLog("WINACK_DROP reason=invalid_parts from=$fromId rawSize=${text.length}")
+            return
+        }
+        val seq = parts[2]
+        val nextIndex = parts[3].trim().toIntOrNull()
+        if (seq.isBlank() || nextIndex == null || nextIndex < 0) {
+            ServerHostStore.appendLog("WINACK_DROP reason=invalid_payload from=$fromId seq=$seq raw=${parts[3]}")
+            return
+        }
+        ServerHostStore.appendLog("WINACK_REQ from=$fromId seq=$seq nextIndex=$nextIndex")
+        repo?.acknowledgeWindow(fromId, seq, nextIndex)
+    }
+
+    private fun handleBatchAck(fromId: String, text: String) {
+        val parts = text.split(":", limit = 4)
+        if (parts.size < 4) {
+            ServerHostStore.appendLog("ACK_DROP reason=invalid_parts from=$fromId rawSize=${text.length}")
+            return
+        }
+        val seq = parts[2]
+        val sha256 = parts[3].trim().lowercase()
+        if (seq.isBlank() || sha256.length != 64) {
+            ServerHostStore.appendLog("ACK_DROP reason=invalid_payload from=$fromId seq=$seq sha=${parts[3]}")
+            return
+        }
+        ServerHostStore.appendLog("ACK_REQ from=$fromId seq=$seq sha256=${sha256.take(12)}...")
+        repo?.acknowledgeResponse(fromId, seq, sha256)
+    }
+
     private fun handleCompressedRequest(fromId: String, text: String) {
         val parts = text.split(":", limit = 7)
-        if (parts.size < 7) return
+        if (parts.size < 7) {
+            ServerHostStore.appendLog("REQC_DROP reason=invalid_parts from=$fromId rawSize=${text.length}")
+            return
+        }
         val seq = parts[2]
         val cmd = parts[3].uppercase()
         val index = parts[4].toIntOrNull() ?: return
         val total = parts[5].toIntOrNull() ?: return
-        if (total <= 0 || index !in 0 until total) return
+        val pendingKey = "$fromId:$seq"
+        val payloadSize = parts[6].length
+        if (total <= 0 || index !in 0 until total) {
+            ServerHostStore.appendLog(
+                "REQC_DROP reason=invalid_index from=$fromId seq=$seq idx=${index + 1}/$total " +
+                    "payloadSize=$payloadSize pendingKey=$pendingKey timeoutMs=$COMPRESSED_REQUEST_TIMEOUT_MS"
+            )
+            return
+        }
         val chunk = parts[6]
         val now = SystemClock.elapsedRealtime()
         pruneStaleCompressedRequests(now)
-        val key = "$fromId:$seq"
-        val pending = pendingCompressedRequests.getOrPut(key) {
+        val pending = pendingCompressedRequests.getOrPut(pendingKey) {
             PendingCompressedRequest(cmd = cmd, total = total, updatedAtMs = now)
         }
         pending.updatedAtMs = now
         pending.chunks[index] = chunk
+        ServerHostStore.appendLog(
+            "REQC_RX from=$fromId seq=$seq idx=${index + 1}/$total payloadSize=$payloadSize " +
+                "pendingKey=$pendingKey pending=${formatChunkList(total, pending.chunks.keys)} " +
+                "missing=${formatMissingChunks(total, pending.chunks.keys)} timeoutMs=$COMPRESSED_REQUEST_TIMEOUT_MS"
+        )
         if (pending.chunks.size < pending.total) return
 
-        pendingCompressedRequests.remove(key)
+        val missingBeforeAssemble = missingChunkIndices(pending.total, pending.chunks.keys)
+        if (missingBeforeAssemble.isNotEmpty()) {
+            ServerHostStore.appendLog(
+                "REQC_WAIT reason=missing_chunks from=$fromId seq=$seq pendingKey=$pendingKey " +
+                    "pending=${formatChunkList(pending.total, pending.chunks.keys)} missing=${formatMissingChunks(pending.total, pending.chunks.keys)}"
+            )
+            return
+        }
+
+        pendingCompressedRequests.remove(pendingKey)
         val encoded = buildString {
             for (i in 0 until pending.total) {
                 append(pending.chunks[i].orEmpty())
@@ -221,12 +313,15 @@ class AndroidServerService : Service() {
         val args = runCatching {
             String(zlibDecompress(Base64.decode(encoded, Base64.NO_WRAP)), Charsets.UTF_8)
         }.getOrElse {
-            ServerHostStore.appendLog("Compressed request decode failed: ${it.message}")
+            ServerHostStore.appendLog(
+                "REQC_DROP reason=decode_failed from=$fromId seq=$seq pendingKey=$pendingKey " +
+                    "pending=${formatChunkList(pending.total, pending.chunks.keys)} error=${it.message}"
+            )
             return
         }
-        val requestKey = "$fromId:$seq"
+        val requestKey = pendingKey
         if (!rememberRequest(requestKey)) {
-            ServerHostStore.appendLog("DUP skip seq=$seq from=${fromId.takeLast(6)}")
+            ServerHostStore.appendLog("REQC_DROP reason=duplicate from=$fromId seq=$seq pendingKey=$pendingKey")
             return
         }
 
@@ -235,7 +330,7 @@ class AndroidServerService : Service() {
         val response = ensureBridge().handleRequest(cmd, args, fromId, fromId).orEmpty()
         val handledAt = SystemClock.elapsedRealtime()
         if (response.isNotBlank() && response != "null") {
-            repo?.sendResponse(fromId, seq, response)
+            repo?.sendResponse(fromId, seq, response, cmd)
         }
         val queuedAt = SystemClock.elapsedRealtime()
         ServerHostStore.appendLog(
@@ -244,10 +339,15 @@ class AndroidServerService : Service() {
     }
 
     private fun pruneStaleCompressedRequests(now: Long) {
-        val staleKeys = pendingCompressedRequests.entries
+        val staleEntries = pendingCompressedRequests.entries
             .filter { (_, pending) -> now - pending.updatedAtMs > COMPRESSED_REQUEST_TIMEOUT_MS }
-            .map { it.key }
-        staleKeys.forEach(pendingCompressedRequests::remove)
+        staleEntries.forEach { (key, pending) ->
+            ServerHostStore.appendLog(
+                "REQC_TIMEOUT pendingKey=$key cmd=${pending.cmd} pending=${formatChunkList(pending.total, pending.chunks.keys)} " +
+                    "missing=${formatMissingChunks(pending.total, pending.chunks.keys)} timeoutMs=$COMPRESSED_REQUEST_TIMEOUT_MS"
+            )
+            pendingCompressedRequests.remove(key)
+        }
     }
 
     private fun rememberRequest(key: String): Boolean {
@@ -261,6 +361,10 @@ class AndroidServerService : Service() {
 
     private fun handlePlainTextRequest(fromId: String, text: String) {
         if (fromId.isBlank() || fromId == DataPacket.ID_BROADCAST) return
+        if (repo?.hasActiveReadTransfer() == true) {
+            ServerHostStore.appendLog("TXT_DROP reason=read_active from=${fromId.takeLast(6)} text=$text")
+            return
+        }
         val normalized = text.trim()
         if (normalized != "?" && normalized != "/?") return
         val now = SystemClock.elapsedRealtime()
@@ -423,4 +527,14 @@ class AndroidServerService : Service() {
         inflater.end()
         return out.toByteArray()
     }
+
+    private fun formatChunkList(total: Int, keys: Collection<Int>): String =
+        if (total <= 0) "[]"
+        else keys.sorted().joinToString(prefix = "[", postfix = "]") { "${it + 1}/$total" }
+
+    private fun missingChunkIndices(total: Int, keys: Collection<Int>): List<Int> =
+        if (total <= 0) emptyList() else (0 until total).filterNot(keys.toSet()::contains)
+
+    private fun formatMissingChunks(total: Int, keys: Collection<Int>): String =
+        missingChunkIndices(total, keys).joinToString(prefix = "[", postfix = "]") { "${it + 1}/$total" }
 }

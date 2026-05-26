@@ -1,5 +1,8 @@
 package com.meshtastic.bbs.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +17,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -55,6 +60,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -85,8 +91,11 @@ import com.meshtastic.bbs.ui.theme.Surface as AppSurface
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BoardListScreen(vm: BbsViewModel) {
+    val context = LocalContext.current
     val state by vm.state.collectAsStateWithLifecycle()
     var showSearch by remember { mutableStateOf(false) }
+    var showClientLog by remember { mutableStateOf(false) }
+    var localToast by remember { mutableStateOf<String?>(null) }
     var searchText by remember { mutableStateOf("") }
     var showChangePassword by remember { mutableStateOf(false) }
     var newPassword by remember { mutableStateOf("") }
@@ -172,6 +181,11 @@ fun BoardListScreen(vm: BbsViewModel) {
                     ),
                 )
             }
+
+            ClientLogButton(
+                onClick = { showClientLog = true },
+                hasLog = state.bssLog.isNotBlank(),
+            )
 
             if (state.onlineUsers.isNotEmpty()) {
                 OnlineUsersRow(state.onlineUsers)
@@ -284,10 +298,58 @@ fun BoardListScreen(vm: BbsViewModel) {
         )
     }
 
-    state.toast?.let { msg ->
+    if (showClientLog) {
+        AlertDialog(
+            onDismissRequest = { showClientLog = false },
+            title = { Text("Client Log") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(360.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        state.bssLog.ifBlank { "目前還沒有 client log" },
+                        color = OnSurface,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText(
+                                "MeshBBS Client Log",
+                                state.bssLog.ifBlank { "目前還沒有 client log" },
+                            )
+                        )
+                        localToast = "Client log 已複製"
+                    },
+                ) {
+                    Text("複製全部")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClientLog = false }) {
+                    Text("關閉")
+                }
+            },
+            containerColor = AppSurface,
+        )
+    }
+
+    val toastMessage = localToast ?: state.toast
+    toastMessage?.let { msg ->
         LaunchedEffect(msg) {
             kotlinx.coroutines.delay(3000)
-            vm.clearToast()
+            if (localToast == msg) {
+                localToast = null
+            } else {
+                vm.clearToast()
+            }
         }
         Box(
             Modifier
@@ -296,6 +358,43 @@ fun BoardListScreen(vm: BbsViewModel) {
             contentAlignment = Alignment.BottomCenter,
         ) {
             Snackbar { Text(msg) }
+        }
+    }
+}
+
+@Composable
+private fun ClientLogButton(
+    onClick: () -> Unit,
+    hasLog: Boolean,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clickable(onClick = onClick),
+        color = SurfaceContainer,
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Code, null, tint = Primary, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text("Client Log", color = OnSurface, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (hasLog) "查看從登入到目前的傳輸 log" else "目前還沒有 client log",
+                        color = OnSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = OnSurfaceVariant)
         }
     }
 }

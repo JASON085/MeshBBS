@@ -84,6 +84,7 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
         private const val MAX_BSS_LOG_CHARS = 24_000
         private const val MAX_NODE_DEBUG_LINES = 120
         private const val MAX_MESH_MESSAGES = 200
+        private const val POSTS_LOADING_STAGE = "正在接收文章列表"
     }
 
     private val appCtx = app.applicationContext
@@ -92,6 +93,8 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
     private var postListRetryJob: Job? = null
     private var postReadRetryJob: Job? = null
     private var pendingReplyPostId: Int? = null
+    private val cachedPostsByBoard = mutableMapOf<String, List<Post>>()
+    private val cachedPostTotalsByBoard = mutableMapOf<String, Int>()
 
     private val _state = MutableStateFlow(BbsUiState())
     val state: StateFlow<BbsUiState> = _state.asStateFlow()
@@ -212,15 +215,24 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openBoard(boardName: String) {
+        val cachedPosts = cachedPostsByBoard[boardName].orEmpty()
+        val cachedTotal = cachedPostTotalsByBoard[boardName] ?: cachedPosts.size
+        if (cachedPosts.isEmpty()) {
+            appendDiagnostic("POSTS", "POSTS_EMPTY_BUT_LOADING board=$boardName page=1")
+        }
         _state.update {
             it.copy(
                 currentBoardName = boardName,
-                posts = emptyList(),
-                postTotal = 0,
+                posts = cachedPosts,
+                postTotal = cachedTotal,
                 currentPage = 1,
                 currentPost = null,
                 searchResults = null,
                 searchQuery = "",
+                isLoading = true,
+                loadInProgress = true,
+                loadStage = POSTS_LOADING_STAGE,
+                loadProgress = 5,
             )
         }
         _screen.value = Screen.Posts(boardName)
@@ -228,7 +240,22 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadPosts(board: String = _state.value.currentBoardName, page: Int = 1) {
-        _state.update { it.copy(isLoading = true, currentPage = page) }
+        val currentPosts = if (page == 1) cachedPostsByBoard[board].orEmpty() else _state.value.posts
+        val currentTotal = if (page == 1) cachedPostTotalsByBoard[board] ?: currentPosts.size else _state.value.postTotal
+        if (page == 1 && currentPosts.isEmpty()) {
+            appendDiagnostic("POSTS", "POSTS_EMPTY_BUT_LOADING board=$board page=1")
+        }
+        _state.update {
+            it.copy(
+                isLoading = true,
+                posts = if (page == 1 && it.currentBoardName == board) currentPosts else it.posts,
+                postTotal = if (page == 1 && it.currentBoardName == board) currentTotal else it.postTotal,
+                currentPage = page,
+                loadInProgress = true,
+                loadStage = POSTS_LOADING_STAGE,
+                loadProgress = if (page == 1) 5 else maxOf(it.loadProgress, 5),
+            )
+        }
         repo?.getPosts(board, page)
         schedulePostListRetry(board, page)
     }
@@ -245,34 +272,10 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openPost(postId: Int) {
         postReadRetryJob?.cancel()
+        postReadRetryJob = null
         _state.update { it.copy(isLoading = true, currentPost = null) }
         _screen.value = Screen.PostView(postId)
         repo?.getPost(postId)
-        postReadRetryJob = viewModelScope.launch {
-            listOf(5_000L, 9_000L).forEachIndexed { index, waitMs ->
-                delay(waitMs)
-                val screen = _screen.value
-                val state = _state.value
-                val stillWaiting = screen is Screen.PostView &&
-                    screen.postId == postId &&
-                    state.currentPost?.id != postId
-                if (!stillWaiting) return@launch
-                _state.update { it.copy(isLoading = true) }
-                appendDiagnostic("BBS", "文章 $postId 讀取逾時，自動重試 ${index + 1}/2")
-                repo?.getPost(postId)
-            }
-            delay(12_000L)
-            val screen = _screen.value
-            val state = _state.value
-            if (screen is Screen.PostView && screen.postId == postId && state.currentPost?.id != postId) {
-                _state.update {
-                    it.copy(
-                        isLoading = false,
-                        toast = "文章讀取逾時，請再試一次",
-                    )
-                }
-            }
-        }
     }
 
     fun togglePush(postId: Int) {
@@ -421,6 +424,9 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(
                         isLoading = false,
+                        loadInProgress = false,
+                        loadStage = "",
+                        loadProgress = 0,
                         boards = event.boards,
                         onlineUsers = event.onlineUsers,
                         searchResults = null,
@@ -431,11 +437,20 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
             is BbsEvent.PostsLoaded -> {
                 postListRetryJob?.cancel()
                 postListRetryJob = null
+                val mergedPosts = if (event.page == 1) event.posts else _state.value.posts + event.posts
+                cachedPostsByBoard[event.board] = mergedPosts
+                cachedPostTotalsByBoard[event.board] = event.total
+                appendDiagnostic(
+                    "POSTS",
+                    "POSTS_DONE board=${event.board} page=${event.page} count=${mergedPosts.size} total=${event.total}"
+                )
                 _state.update { s ->
-                    val merged = if (event.page == 1) event.posts else s.posts + event.posts
                     s.copy(
                         isLoading = false,
-                        posts = merged,
+                        loadInProgress = false,
+                        loadStage = "",
+                        loadProgress = 0,
+                        posts = mergedPosts,
                         postTotal = event.total,
                         currentPage = event.page,
                         currentBoardName = event.board,
@@ -446,7 +461,15 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
             is BbsEvent.PostLoaded -> {
                 postReadRetryJob?.cancel()
                 postReadRetryJob = null
-                _state.update { it.copy(isLoading = false, currentPost = event.detail) }
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        loadInProgress = false,
+                        loadStage = "",
+                        loadProgress = 0,
+                        currentPost = event.detail,
+                    )
+                }
             }
 
             is BbsEvent.PostCreated -> {
@@ -627,10 +650,27 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
             is BbsEvent.ServerError -> {
                 postListRetryJob?.cancel()
                 postListRetryJob = null
+                val current = _state.value
+                val boardName = current.currentBoardName
+                val postsLoading = current.loadInProgress && current.loadStage == POSTS_LOADING_STAGE
+                val fallbackPosts = if (postsLoading) cachedPostsByBoard[boardName].orEmpty() else current.posts
+                val fallbackTotal = if (postsLoading) {
+                    cachedPostTotalsByBoard[boardName] ?: fallbackPosts.size
+                } else {
+                    current.postTotal
+                }
+                if (postsLoading) {
+                    appendDiagnostic(
+                        "POSTS",
+                        "POSTS_TIMEOUT board=$boardName keep=${fallbackPosts.size} msg=${event.msg.take(80)}"
+                    )
+                }
                 _state.update {
                     it.copy(
                         isLoading = false,
                         toast = event.msg,
+                        posts = if (postsLoading) fallbackPosts else it.posts,
+                        postTotal = if (postsLoading) fallbackTotal else it.postTotal,
                         submitInProgress = false,
                         submitStage = "",
                         submitProgress = 0,
@@ -703,32 +743,7 @@ class BbsViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun schedulePostListRetry(board: String, page: Int) {
         postListRetryJob?.cancel()
-        if (page != 1) return
-        postListRetryJob = viewModelScope.launch {
-            listOf(4_000L, 8_000L).forEachIndexed { index, waitMs ->
-                delay(waitMs)
-                val screen = _screen.value
-                val state = _state.value
-                val stillWaiting = screen is Screen.Posts &&
-                    screen.boardName == board &&
-                    state.currentBoardName == board &&
-                    state.posts.isEmpty()
-                if (!stillWaiting) return@launch
-                _state.update { it.copy(isLoading = true) }
-                appendDiagnostic("BBS", "看板 $board 讀取較慢，自動重試 ${index + 1}/2")
-                repo?.getPosts(board, page)
-            }
-            delay(10_000L)
-            val screen = _screen.value
-            val state = _state.value
-            val stillWaiting = screen is Screen.Posts &&
-                screen.boardName == board &&
-                state.currentBoardName == board &&
-                state.posts.isEmpty()
-            if (stillWaiting) {
-                _state.update { it.copy(isLoading = false, toast = "看板讀取逾時，請重試" ) }
-            }
-        }
+        postListRetryJob = null
     }
 
     private fun limitChars(text: String, maxChars: Int): String =

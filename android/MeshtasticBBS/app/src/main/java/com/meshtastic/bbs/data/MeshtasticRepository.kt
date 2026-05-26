@@ -31,6 +31,12 @@ import java.util.zip.Inflater
 class MeshtasticRepository(private val context: Context) {
 
     companion object {
+        private enum class ClientTransportProfile(val winAckDebounceMs: Long) {
+            STABLE(1_000L),
+            BALANCED(800L),
+            FAST_TEST(600L),
+        }
+
         const val MESH_PACKAGE = "com.geeksville.mesh"
         const val MESH_SERVICE = "$MESH_PACKAGE.Service"
         const val ACTION_RECEIVED = "$MESH_PACKAGE.DATA_PACKET_RECEIVED"
@@ -38,7 +44,7 @@ class MeshtasticRepository(private val context: Context) {
         const val EXTRA_PACKET = "$MESH_PACKAGE.DATA_PACKET"
         const val EXTRA_PAYLOAD = "$MESH_PACKAGE.Payload"
         const val BBS_APP = 257
-        const val BUILD = "b0604m"
+        const val BUILD = "b0604aa"
         private val BBS_PRIVATE_PREFIX = "MBBS1".toByteArray(Charsets.UTF_8)
         private val BBS_BINARY_PREFIX = "MBBS2|".toByteArray(Charsets.UTF_8)
         private val MESH_CHAT_PREFIX = "MBCHAT1".toByteArray(Charsets.UTF_8)
@@ -46,7 +52,16 @@ class MeshtasticRepository(private val context: Context) {
         private const val REQUEST_CHUNK_CHARS = 180
         private const val REQUEST_CHUNK_PAUSE_MS = 320L
         private const val PACKET_HOP_LIMIT = 4
-        private const val PENDING_CHUNK_TIMEOUT_MS = 90_000L
+        private const val BASE_PENDING_CHUNK_TIMEOUT_MS = 60_000L
+        private const val PER_CHUNK_TIMEOUT_MS = 8_000L
+        private const val MAX_PENDING_CHUNK_TIMEOUT_MS = 240_000L
+        private const val PENDING_CHUNK_CLEANUP_INTERVAL_MS = 5_000L
+        private const val READ_FIRST_CHUNK_TIMEOUT_MS = 8_000L
+        private const val MISSING_CHUNK_REQUEST_IDLE_MS = 4_000L
+        private const val MISSING_CHUNK_REQUEST_INTERVAL_MS = 4_000L
+        private const val MAX_MISSING_CHUNK_REQUESTS = 3
+        private const val MAX_MISSING_CHUNK_BATCH_SIZE = 1
+        private val CLIENT_TRANSPORT_PROFILE = ClientTransportProfile.BALANCED
     }
 
     private var meshService: IMeshService? = null
@@ -62,14 +77,30 @@ class MeshtasticRepository(private val context: Context) {
     private val requestSender = Executors.newSingleThreadExecutor()
     private val heartbeatExecutor = Executors.newSingleThreadScheduledExecutor()
     private var heartbeatTask: ScheduledFuture<*>? = null
+    private var chunkCleanupTask: ScheduledFuture<*>? = null
 
     private data class PendingChunk(
         val chunks: MutableMap<Int, String> = ConcurrentHashMap(),
         var total: Int = -1,
         val cmd: String = "",
         val stage: String = "",
+        val startedAtMs: Long = SystemClock.elapsedRealtime(),
         var updatedAtMs: Long = SystemClock.elapsedRealtime(),
+        var sourceNodeId: String = "",
+        var expectedSha256: String = "",
+        var proto: PendingProto = PendingProto.UNKNOWN,
+        var missRequestCount: Int = 0,
+        var lastMissRequestAtMs: Long = 0L,
+        var lastWindowAckAtMs: Long = 0L,
+        var lastWindowAckNextIndex: Int = 0,
+        var metaReceivedAtMs: Long = 0L,
     )
+
+    private enum class PendingProto {
+        UNKNOWN,
+        MBBS2,
+        BBS_RES,
+    }
 
     private data class NodeBundleMeta(
         val nodeId: String,
@@ -171,6 +202,7 @@ class MeshtasticRepository(private val context: Context) {
         }
 
         debug("binding Meshtastic service")
+        startChunkCleanup()
         val bound = bindService(serviceConn)
         debug("bindService result=$bound")
         if (!bound) {
@@ -192,6 +224,7 @@ class MeshtasticRepository(private val context: Context) {
         awaitClose {
             debug("connect() closed")
             stopHeartbeat()
+            stopChunkCleanup()
             MeshPacketReceiver.handler = null
             runCatching { context.unregisterReceiver(dataReceiver) }
             runCatching { context.unbindService(serviceConn) }
@@ -203,6 +236,7 @@ class MeshtasticRepository(private val context: Context) {
     fun disconnect() {
         debug("disconnect() called")
         stopHeartbeat()
+        stopChunkCleanup()
         meshService = null
     }
 
@@ -290,18 +324,28 @@ class MeshtasticRepository(private val context: Context) {
         ) {
             return null
         }
-        handleMbbs2(bytes)?.let { return it }
+        handleMbbs2(bytes, packet.from.orEmpty(), packet.to.orEmpty())?.let { return it }
         if (bytes.startsWithPrefix(BBS_BINARY_PREFIX)) {
             debug("ignore raw MBBS2 packet from=${packet.from} size=${bytes.size}")
             return null
         }
-        val text = bytes.toString(Charsets.UTF_8)
+        val text = decodeControlText(bytes, packet.dataType) ?: return null
         val fromId = packet.from.orEmpty()
         if (fromId.isNotBlank() && fromId != DataPacket.ID_LOCAL && fromId != myNodeId) {
-            return handleIncoming(text, fromId)
+            return handleIncoming(text, fromId, packet.to.orEmpty())
                 ?: BbsEvent.NodeChanged(MeshNode(fromId, fromId, "", System.currentTimeMillis()))
         }
-        return handleIncoming(text, fromId)
+        return handleIncoming(text, fromId, packet.to.orEmpty())
+    }
+
+    private fun decodeControlText(bytes: ByteArray, dataType: Int): String? {
+        return when {
+            bytes.startsWithPrefix(BBS_PRIVATE_PREFIX) ->
+                String(bytes, BBS_PRIVATE_PREFIX.size, bytes.size - BBS_PRIVATE_PREFIX.size, Charsets.UTF_8)
+            dataType == BBS_APP || dataType == DataPacket.PRIVATE_APP || dataType == DataPacket.TEXT_MESSAGE_APP ->
+                runCatching { bytes.toString(Charsets.UTF_8) }.getOrNull()
+            else -> null
+        }
     }
 
     private fun parseNodeChange(intent: Intent): MeshNode? {
@@ -337,58 +381,78 @@ class MeshtasticRepository(private val context: Context) {
         return null
     }
 
-    private fun handleMbbs2(bytes: ByteArray): BbsEvent? {
+    private fun handleMbbs2(bytes: ByteArray, fromNode: String, toNode: String): BbsEvent? {
         val headerEnd = bytes.indexOf('\n'.code.toByte())
-        if (headerEnd <= 0) return null
+        if (headerEnd <= 0) {
+            comm("CHUNK_DROP proto=MBBS2 from=$fromNode to=$toNode reason=missing_header payloadSize=${bytes.size}")
+            return null
+        }
         val header = String(bytes, 0, headerEnd, Charsets.UTF_8)
         if (!header.startsWith("MBBS2|")) return null
 
         val parts = header.split("|")
-        if (parts.size < 5) return null
+        if (parts.size < 5) {
+            comm("CHUNK_DROP proto=MBBS2 from=$fromNode to=$toNode reason=invalid_header header=$header")
+            return null
+        }
         val destId = parts[1]
         val seq = parts[2]
         val idx = parts[3].toIntOrNull() ?: return null
         val total = parts[4].toIntOrNull() ?: return null
-        if (total <= 0 || idx !in 0 until total) return null
-        comm("RECV MBBS2 seq=$seq chunk=${idx + 1}/$total from=$destId")
+        val payloadSize = bytes.size - headerEnd - 1
+        if (total <= 0 || idx !in 0 until total) {
+            comm(
+                "CHUNK_DROP proto=MBBS2 from=$fromNode to=$toNode seq=$seq idx=${idx + 1}/$total " +
+                    "payloadSize=$payloadSize pendingKey=$seq timeoutMs=${pendingChunkTimeoutMs(total)} reason=invalid_index"
+            )
+            return null
+        }
 
-        if (myNodeId.isNotBlank() && destId != myNodeId) return null
-        if (seq in completed) return null
+        if (myNodeId.isNotBlank() && destId != myNodeId) {
+            comm(
+                "CHUNK_DROP proto=MBBS2 from=$fromNode to=$toNode seq=$seq idx=${idx + 1}/$total " +
+                    "payloadSize=$payloadSize pendingKey=$seq timeoutMs=${pendingChunkTimeoutMs(total)} " +
+                    "reason=dest_mismatch logicalTo=$destId myNodeId=$myNodeId"
+            )
+            return null
+        }
+        if (seq in completed) {
+            comm(
+                "CHUNK_DROP proto=MBBS2 from=$fromNode to=$toNode seq=$seq idx=${idx + 1}/$total " +
+                    "payloadSize=$payloadSize pendingKey=$seq timeoutMs=${pendingChunkTimeoutMs(total)} reason=already_completed"
+            )
+            return null
+        }
 
         val now = SystemClock.elapsedRealtime()
         pruneStalePendingChunks(now)
         val entry = pending.getOrPut(seq) { PendingChunk() }
         entry.updatedAtMs = now
+        entry.sourceNodeId = fromNode.ifBlank { entry.sourceNodeId }
+        entry.proto = PendingProto.MBBS2
+        val firstChunkWasMissing = !entry.chunks.containsKey(0)
         entry.chunks[idx] = Base64.encodeToString(bytes.copyOfRange(headerEnd + 1, bytes.size), Base64.NO_WRAP)
         entry.total = total
+        comm(
+            "CHUNK_RX proto=MBBS2 from=$fromNode to=$toNode seq=$seq idx=${idx + 1}/$total payloadSize=$payloadSize " +
+                "pendingKey=$seq pending=${formatChunkList(total, entry.chunks.keys)} " +
+                "missing=${formatMissingChunks(total, entry.chunks.keys)} timeoutMs=${pendingChunkTimeoutMs(total)}"
+        )
+        if (entry.cmd.equals("READ", ignoreCase = true) && idx == 0 && firstChunkWasMissing) {
+            comm("READ_FIRST_CHUNK_RX seq=$seq idx=1/$total payloadSize=$payloadSize from=$fromNode")
+        }
+        maybeSendWindowAck(seq, entry, now)
         if (entry.stage.isNotBlank()) {
             val progress = (20 + ((entry.chunks.size * 75) / total.coerceAtLeast(1))).coerceAtMost(95)
             emit(BbsEvent.LoadProgress("${entry.stage} ${entry.chunks.size}/$total", progress, true))
         }
-        if (entry.chunks.size < total) return null
-
-        completed.add(seq)
-        pending.remove(seq)
-        if (completed.size > 300) completed.remove(completed.first())
-
-        val compressed = ByteArrayOutputStream()
-        for (index in 0 until total) {
-            val chunk = entry.chunks[index] ?: ""
-            compressed.write(Base64.decode(chunk, Base64.DEFAULT))
-        }
-        return try {
-            val event = parseJson(JSONObject(String(zlibDecompress(compressed.toByteArray()), Charsets.UTF_8)))
-            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
-            event
-        } catch (e: Exception) {
-            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
-            BbsEvent.ServerError("BBS 回應解析失敗: ${e.message}")
-        }
+        return tryFinalizePending(seq, entry, fromNode, toNode)
     }
 
-    private fun handleIncoming(text: String, fromId: String): BbsEvent? {
+    private fun handleIncoming(text: String, fromId: String, toId: String): BbsEvent? {
         return when {
-            text.startsWith("BBS:RES:") -> handleBbsRes(text)
+            text.startsWith("BBS:META:") -> handleBatchMeta(text, fromId, toId)
+            text.startsWith("BBS:RES:") -> handleBbsRes(text, fromId, toId)
             text.startsWith("MBBS2|") -> null
             !text.startsWith("BBS:") -> BbsEvent.NewMeshMessage(
                 MeshMessage(fromId, fromId.takeLast(6), text, "")
@@ -397,50 +461,93 @@ class MeshtasticRepository(private val context: Context) {
         }
     }
 
-    private fun handleBbsRes(text: String): BbsEvent? {
+    private fun handleBatchMeta(text: String, fromNode: String, toNode: String): BbsEvent? {
+        val parts = text.split(":", limit = 5)
+        if (parts.size < 5) {
+            comm("BATCH_META_DROP from=$fromNode to=$toNode reason=invalid_parts payloadSize=${text.length}")
+            return null
+        }
+        val seq = parts[2]
+        val total = parts[3].toIntOrNull() ?: return null
+        val sha256 = parts[4].trim().lowercase()
+        if (seq.isBlank() || total <= 0 || sha256.length != 64) {
+            comm("BATCH_META_DROP from=$fromNode to=$toNode seq=$seq total=$total reason=invalid_meta")
+            return null
+        }
+        val entry = pending.getOrPut(seq) { PendingChunk(total = total) }
+        entry.updatedAtMs = SystemClock.elapsedRealtime()
+        entry.metaReceivedAtMs = entry.updatedAtMs
+        entry.sourceNodeId = fromNode.ifBlank { entry.sourceNodeId }
+        if (entry.total <= 0) entry.total = total
+        entry.expectedSha256 = sha256
+        comm(
+            "BATCH_META_RX from=$fromNode to=$toNode seq=$seq expectedTotal=$total " +
+                "sha256=${sha256.take(12)}..."
+        )
+        if (entry.cmd.equals("READ", ignoreCase = true)) {
+            comm("READ_META_RX seq=$seq total=$total from=$fromNode")
+        }
+        return tryFinalizePending(seq, entry, fromNode, toNode)
+    }
+
+    private fun handleBbsRes(text: String, fromNode: String, toNode: String): BbsEvent? {
         val parts = text.split(":", limit = 7)
-        if (parts.size < 7) return null
+        if (parts.size < 7) {
+            comm("CHUNK_DROP proto=BBS_RES from=$fromNode to=$toNode reason=invalid_parts payloadSize=${text.length}")
+            return null
+        }
 
         val destId = parts[2]
         val seq = parts[3]
         val idx = parts[4].toIntOrNull() ?: return null
         val total = parts[5].toIntOrNull() ?: return null
-        if (total <= 0 || idx !in 0 until total) return null
         val data = parts[6]
-        comm("RECV BBS:RES seq=$seq chunk=${idx + 1}/$total from=$destId len=${data.length}")
+        if (total <= 0 || idx !in 0 until total) {
+            comm(
+                "CHUNK_DROP proto=BBS_RES from=$fromNode to=$toNode seq=$seq idx=${idx + 1}/$total " +
+                    "payloadSize=${data.length} pendingKey=$seq timeoutMs=${pendingChunkTimeoutMs(total)} reason=invalid_index"
+            )
+            return null
+        }
 
-        if (myNodeId.isNotBlank() && destId != myNodeId) return null
-        if (seq in completed) return null
+        if (myNodeId.isNotBlank() && destId != myNodeId) {
+            comm(
+                "CHUNK_DROP proto=BBS_RES from=$fromNode to=$toNode seq=$seq idx=${idx + 1}/$total payloadSize=${data.length} " +
+                    "pendingKey=$seq timeoutMs=${pendingChunkTimeoutMs(total)} reason=dest_mismatch logicalTo=$destId myNodeId=$myNodeId"
+            )
+            return null
+        }
+        if (seq in completed) {
+            comm(
+                "CHUNK_DROP proto=BBS_RES from=$fromNode to=$toNode seq=$seq idx=${idx + 1}/$total payloadSize=${data.length} " +
+                    "pendingKey=$seq timeoutMs=${pendingChunkTimeoutMs(total)} reason=already_completed"
+            )
+            return null
+        }
 
         val now = SystemClock.elapsedRealtime()
         pruneStalePendingChunks(now)
         val entry = pending.getOrPut(seq) { PendingChunk() }
         entry.updatedAtMs = now
+        entry.sourceNodeId = fromNode.ifBlank { entry.sourceNodeId }
+        entry.proto = PendingProto.BBS_RES
+        val firstChunkWasMissing = !entry.chunks.containsKey(0)
         entry.chunks[idx] = data
         entry.total = total
+        comm(
+            "CHUNK_RX proto=BBS_RES from=$fromNode to=$toNode seq=$seq idx=${idx + 1}/$total payloadSize=${data.length} " +
+                "pendingKey=$seq pending=${formatChunkList(total, entry.chunks.keys)} " +
+                "missing=${formatMissingChunks(total, entry.chunks.keys)} timeoutMs=${pendingChunkTimeoutMs(total)}"
+        )
+        if (entry.cmd.equals("READ", ignoreCase = true) && idx == 0 && firstChunkWasMissing) {
+            comm("READ_FIRST_CHUNK_RX seq=$seq idx=1/$total payloadSize=${data.length} from=$fromNode")
+        }
+        maybeSendWindowAck(seq, entry, now)
         if (entry.stage.isNotBlank()) {
             val progress = (20 + ((entry.chunks.size * 75) / total.coerceAtLeast(1))).coerceAtMost(95)
             emit(BbsEvent.LoadProgress("${entry.stage} ${entry.chunks.size}/$total", progress, true))
         }
-        if (entry.chunks.size < total) return null
-
-        completed.add(seq)
-        pending.remove(seq)
-        if (completed.size > 300) completed.remove(completed.first())
-
-        val joined = (0 until total).joinToString("") { index -> entry.chunks[index] ?: "" }
-        return try {
-            val decompressed = String(
-                zlibDecompress(Base64.decode(joined, Base64.DEFAULT)),
-                Charsets.UTF_8,
-            )
-            val event = parseJson(JSONObject(decompressed))
-            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
-            event
-        } catch (e: Exception) {
-            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
-            BbsEvent.ServerError("BBS 回應解析失敗: ${e.message}")
-        }
+        return tryFinalizePending(seq, entry, fromNode, toNode)
     }
 
     private fun zlibDecompress(data: ByteArray): ByteArray {
@@ -458,11 +565,221 @@ class MeshtasticRepository(private val context: Context) {
     }
 
     private fun pruneStalePendingChunks(now: Long) {
-        val staleKeys = pending.entries
-            .filter { (_, entry) -> now - entry.updatedAtMs > PENDING_CHUNK_TIMEOUT_MS }
-            .map { it.key }
-        staleKeys.forEach(pending::remove)
+        requestMissingChunksIfNeeded(now)
+        val staleEntries = pending.entries
+            .filter { (_, entry) -> now - entry.updatedAtMs > pendingChunkTimeoutMs(entry.total) }
+        staleEntries.forEach { (key, entry) ->
+            val timeoutMs = pendingChunkTimeoutMs(entry.total)
+            val elapsedMs = now - entry.startedAtMs
+            comm(
+                "CHUNK_TIMEOUT seq=$key cmd=${entry.cmd.ifBlank { "-" }} expectedTotal=${entry.total} " +
+                    "received=${formatChunkList(entry.total, entry.chunks.keys)} " +
+                    "missing=${formatMissingChunks(entry.total, entry.chunks.keys)} " +
+                    "elapsedMs=$elapsedMs timeoutMs=$timeoutMs"
+            )
+            if (entry.stage.isNotBlank()) {
+                emit(BbsEvent.LoadProgress("", 0, false))
+                emit(
+                    BbsEvent.ServerError(
+                        "${entry.stage} 接收逾時，缺少 ${formatMissingChunks(entry.total, entry.chunks.keys)}"
+                    )
+                )
+            }
+            pending.remove(key)
+        }
     }
+
+    private fun requestMissingChunksIfNeeded(now: Long) {
+        pending.forEach { (seq, entry) ->
+            val total = entry.total
+            if (total <= 0 || entry.chunks.size >= total) return@forEach
+            if (entry.cmd.equals("READ", ignoreCase = true) &&
+                entry.expectedSha256.isNotBlank() &&
+                entry.chunks.isEmpty()
+            ) {
+                if (entry.missRequestCount >= MAX_MISSING_CHUNK_REQUESTS) return@forEach
+                if (now - entry.metaReceivedAtMs < READ_FIRST_CHUNK_TIMEOUT_MS) return@forEach
+                if (entry.lastMissRequestAtMs > 0L && now - entry.lastMissRequestAtMs < MISSING_CHUNK_REQUEST_INTERVAL_MS) {
+                    return@forEach
+                }
+                comm(
+                    "READ_NO_FIRST_CHUNK_TIMEOUT seq=$seq total=$total idleMs=${now - entry.metaReceivedAtMs} " +
+                        "hasMeta=${entry.expectedSha256.isNotBlank()} target=${entry.sourceNodeId.ifBlank { serverNodeId }}"
+                )
+                sendMissingChunkRequest(seq, entry, listOf(0), now, "first_chunk_timeout")
+                return@forEach
+            }
+            if (entry.chunks.isEmpty()) return@forEach
+            if (entry.missRequestCount >= MAX_MISSING_CHUNK_REQUESTS) return@forEach
+            if (now - entry.updatedAtMs < MISSING_CHUNK_REQUEST_IDLE_MS) return@forEach
+            if (entry.lastMissRequestAtMs > 0L && now - entry.lastMissRequestAtMs < MISSING_CHUNK_REQUEST_INTERVAL_MS) {
+                return@forEach
+            }
+            val missing = missingChunkIndices(total, entry.chunks.keys)
+            if (missing.isEmpty()) return@forEach
+            val requestBatch = missing.take(MAX_MISSING_CHUNK_BATCH_SIZE)
+            val idleMs = now - entry.updatedAtMs
+            comm(
+                "CHUNK_STALL seq=$seq cmd=${entry.cmd.ifBlank { "-" }} total=$total " +
+                    "received=${formatChunkList(total, entry.chunks.keys)} " +
+                    "missing=${formatMissingChunks(total, entry.chunks.keys)} idleMs=$idleMs " +
+                    "missCount=${entry.missRequestCount} hasMeta=${entry.expectedSha256.isNotBlank()}"
+            )
+            sendMissingChunkRequest(seq, entry, requestBatch, now, "missing")
+        }
+    }
+
+    private fun maybeSendWindowAck(seq: String, entry: PendingChunk, now: Long) {
+        val total = entry.total
+        if (total <= 1) return
+        val targetNode = entry.sourceNodeId.ifBlank { serverNodeId }
+        if (targetNode.isBlank() || targetNode == DataPacket.ID_BROADCAST) return
+        val nextIndex = contiguousReceivedCount(total, entry.chunks.keys)
+        if (nextIndex <= entry.lastWindowAckNextIndex) return
+        if (entry.lastWindowAckAtMs > 0L &&
+            now - entry.lastWindowAckAtMs < CLIENT_TRANSPORT_PROFILE.winAckDebounceMs
+        ) return
+        comm(
+            "SEND BBS:WINACK seq=$seq cmd=${entry.cmd.ifBlank { "-" }} to=$targetNode " +
+                "nextIndex=$nextIndex/$total received=${formatChunkList(total, entry.chunks.keys)}"
+        )
+        sendRaw("BBS:WINACK:$seq:$nextIndex", targetNode)
+        entry.lastWindowAckAtMs = now
+        entry.lastWindowAckNextIndex = nextIndex
+    }
+
+    private fun tryFinalizePending(seq: String, entry: PendingChunk, fromNode: String, toNode: String): BbsEvent? {
+        val total = entry.total
+        if (total <= 0 || entry.chunks.size < total) return null
+
+        val missingBeforeAssemble = missingChunkIndices(total, entry.chunks.keys)
+        if (missingBeforeAssemble.isNotEmpty()) {
+            comm(
+                "CHUNK_WAIT proto=${entry.proto.name} pendingKey=$seq pending=${formatChunkList(total, entry.chunks.keys)} " +
+                    "missing=${formatMissingChunks(total, entry.chunks.keys)} reason=assemble_blocked"
+            )
+            return null
+        }
+        if (entry.expectedSha256.isBlank()) {
+            comm(
+                "CHUNK_WAIT proto=${entry.proto.name} pendingKey=$seq pending=${formatChunkList(total, entry.chunks.keys)} " +
+                    "missing=[] reason=await_meta"
+            )
+            return null
+        }
+
+        val compressed = when (entry.proto) {
+            PendingProto.MBBS2 -> buildCompressedBytes(entry, total)
+            PendingProto.BBS_RES -> Base64.decode((0 until total).joinToString("") { index -> entry.chunks[index] ?: "" }, Base64.DEFAULT)
+            PendingProto.UNKNOWN -> return null
+        }
+        val actualSha256 = sha256Hex(compressed)
+        if (!actualSha256.equals(entry.expectedSha256, ignoreCase = true)) {
+            comm(
+                "CHUNK_HASH_FAIL proto=${entry.proto.name} from=$fromNode to=$toNode seq=$seq " +
+                    "expected=${entry.expectedSha256.take(12)}... actual=${actualSha256.take(12)}..."
+            )
+            entry.chunks.clear()
+            entry.updatedAtMs = SystemClock.elapsedRealtime()
+            sendMissingChunkRequest(seq, entry, (0 until total).toList(), entry.updatedAtMs, "hash_mismatch")
+            return null
+        }
+
+        return try {
+            val event = when (entry.proto) {
+                PendingProto.MBBS2 -> parseJson(JSONObject(String(zlibDecompress(compressed), Charsets.UTF_8)))
+                PendingProto.BBS_RES -> parseJson(JSONObject(String(zlibDecompress(compressed), Charsets.UTF_8)))
+                PendingProto.UNKNOWN -> null
+            }
+            completed.add(seq)
+            pending.remove(seq)
+            if (completed.size > 300) completed.remove(completed.first())
+            sendBatchAck(seq, entry.expectedSha256, entry.sourceNodeId)
+            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
+            comm(
+                "CHUNK_DONE proto=${entry.proto.name} pendingKey=$seq total=$total " +
+                    "sha256=${actualSha256.take(12)}... from=$fromNode to=$toNode"
+            )
+            event
+        } catch (e: Exception) {
+            if (entry.stage.isNotBlank()) emit(BbsEvent.LoadProgress("", 0, false))
+            comm(
+                "CHUNK_DROP proto=${entry.proto.name} from=$fromNode to=$toNode seq=$seq pendingKey=$seq " +
+                    "pending=${formatChunkList(total, entry.chunks.keys)} reason=parse_failed error=${e.message}"
+            )
+            BbsEvent.ServerError("BBS 回應解析失敗: ${e.message}")
+        }
+    }
+
+    private fun buildCompressedBytes(entry: PendingChunk, total: Int): ByteArray {
+        val compressed = ByteArrayOutputStream()
+        for (index in 0 until total) {
+            val chunk = entry.chunks[index] ?: ""
+            compressed.write(Base64.decode(chunk, Base64.DEFAULT))
+        }
+        return compressed.toByteArray()
+    }
+
+    private fun sendMissingChunkRequest(
+        seq: String,
+        entry: PendingChunk,
+        indexes: List<Int>,
+        now: Long,
+        reason: String,
+    ) {
+        val total = entry.total
+        if (indexes.isEmpty() || entry.missRequestCount >= MAX_MISSING_CHUNK_REQUESTS) return
+        val targetNode = entry.sourceNodeId.ifBlank { serverNodeId }
+        if (targetNode.isBlank() || targetNode == DataPacket.ID_BROADCAST) return
+        val missingSpec = indexes.sorted().take(MAX_MISSING_CHUNK_BATCH_SIZE).joinToString(",")
+        comm(
+            "SEND BBS:MISS seq=$seq cmd=${entry.cmd.ifBlank { "-" }} to=$targetNode " +
+                "total=$total received=${formatChunkList(total, entry.chunks.keys)} " +
+                "missing=${formatMissingChunks(total, entry.chunks.keys)} " +
+                "retry=${entry.missRequestCount + 1}/$MAX_MISSING_CHUNK_REQUESTS targetNode=$targetNode spec=$missingSpec reason=$reason"
+        )
+        sendRaw("BBS:MISS:$seq:$missingSpec", targetNode)
+        entry.missRequestCount += 1
+        entry.lastMissRequestAtMs = now
+    }
+
+    private fun sendBatchAck(seq: String, sha256: String, sourceNodeId: String) {
+        val targetNode = sourceNodeId.ifBlank { serverNodeId }
+        if (targetNode.isBlank() || targetNode == DataPacket.ID_BROADCAST) return
+        comm("SEND BBS:ACK seq=$seq to=$targetNode sha256=${sha256.take(12)}...")
+        sendRaw("BBS:ACK:$seq:$sha256", targetNode)
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+    private fun pendingChunkTimeoutMs(total: Int): Long {
+        if (total <= 0) return BASE_PENDING_CHUNK_TIMEOUT_MS
+        return (BASE_PENDING_CHUNK_TIMEOUT_MS + total.toLong() * PER_CHUNK_TIMEOUT_MS)
+            .coerceAtMost(MAX_PENDING_CHUNK_TIMEOUT_MS)
+    }
+
+    private fun formatChunkList(total: Int, keys: Collection<Int>): String =
+        if (total <= 0) "[]"
+        else keys.sorted().joinToString(prefix = "[", postfix = "]") { "${it + 1}/$total" }
+
+    private fun missingChunkIndices(total: Int, keys: Collection<Int>): List<Int> =
+        if (total <= 0) emptyList() else (0 until total).filterNot(keys.toSet()::contains)
+
+    private fun contiguousReceivedCount(total: Int, keys: Collection<Int>): Int {
+        if (total <= 0) return 0
+        val keySet = keys.toSet()
+        var nextIndex = 0
+        while (nextIndex < total && keySet.contains(nextIndex)) {
+            nextIndex += 1
+        }
+        return nextIndex
+    }
+
+    private fun formatMissingChunks(total: Int, keys: Collection<Int>): String =
+        missingChunkIndices(total, keys).joinToString(prefix = "[", postfix = "]") { "${it + 1}/$total" }
 
     private fun zlibCompress(data: ByteArray): ByteArray {
         val deflater = Deflater(Deflater.BEST_COMPRESSION)
@@ -635,6 +952,7 @@ class MeshtasticRepository(private val context: Context) {
         heartbeatTask = heartbeatExecutor.scheduleAtFixedRate(
             {
                 if (meshService == null) return@scheduleAtFixedRate
+                if (hasActiveLoadTransfer()) return@scheduleAtFixedRate
                 sendReq("HEARTBEAT", user.name)
             },
             60L,
@@ -646,6 +964,29 @@ class MeshtasticRepository(private val context: Context) {
     private fun stopHeartbeat() {
         heartbeatTask?.cancel(false)
         heartbeatTask = null
+    }
+
+    private fun hasActiveLoadTransfer(): Boolean =
+        pending.values.any { entry ->
+            entry.cmd.uppercase() in setOf("LIST", "POSTS", "READ") &&
+                entry.total > 0 &&
+                entry.chunks.isNotEmpty() &&
+                entry.chunks.size < entry.total
+        }
+
+    private fun startChunkCleanup() {
+        stopChunkCleanup()
+        chunkCleanupTask = heartbeatExecutor.scheduleAtFixedRate(
+            { pruneStalePendingChunks(SystemClock.elapsedRealtime()) },
+            PENDING_CHUNK_CLEANUP_INTERVAL_MS,
+            PENDING_CHUNK_CLEANUP_INTERVAL_MS,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    private fun stopChunkCleanup() {
+        chunkCleanupTask?.cancel(false)
+        chunkCleanupTask = null
     }
 
     private fun nextSeq() = seqCounter.getAndIncrement().toString()

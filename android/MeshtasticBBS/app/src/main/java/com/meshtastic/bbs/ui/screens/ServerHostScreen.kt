@@ -93,6 +93,7 @@ import com.meshtastic.bbs.server.ServerHostStore
 import com.meshtastic.bbs.server.ServerRecentPostSummary
 import com.meshtastic.bbs.server.ServerStats
 import com.meshtastic.bbs.server.ServerUserSummary
+import com.meshtastic.bbs.server.TransportProfile
 import com.meshtastic.bbs.ui.theme.AuthorGreen
 import com.meshtastic.bbs.ui.theme.Background
 import com.meshtastic.bbs.ui.theme.Error
@@ -283,12 +284,44 @@ fun ServerHostScreen(onExit: () -> Unit) {
                     context = context,
                     active = state.isRunning || state.isStarting,
                     hopLimit = state.hopLimit,
+                    transportProfile = state.transportProfile,
+                    responseChunkSize = state.responseChunkSize,
+                    responseChunkDelayMs = state.responseChunkDelayMs,
+                    broadcastResponsesForDebug = state.broadcastResponsesForDebug,
+                    broadcastResendForDebug = state.broadcastResendForDebug,
                     locked = lockScreenActive,
                     onLock = { lockScreenActive = true },
                     onHopLimitChange = { hopLimit ->
                         if (hopLimit != state.hopLimit) {
                             ServerHostStore.setHopLimit(hopLimit)
                             ServerHostStore.appendLog("Meshtastic hopLimit 已設為 $hopLimit")
+                        }
+                    },
+                    onTransportProfileChange = { profile ->
+                        if (profile != state.transportProfile) {
+                            ServerHostStore.setTransportProfile(profile)
+                            ServerHostStore.appendLog(
+                                "Meshtastic transport profile 已設為 ${profile.name} " +
+                                    "chunk=${profile.responseChunkSize} delay=${profile.responseChunkDelayMs}ms"
+                            )
+                        }
+                    },
+                    onBroadcastResponsesForDebugChange = { enabled ->
+                        if (enabled != state.broadcastResponsesForDebug) {
+                            ServerHostStore.setBroadcastResponsesForDebug(enabled)
+                            ServerHostStore.appendLog(
+                                if (enabled) "Meshtastic response 改用 broadcast 測試"
+                                else "Meshtastic response 恢復 directed 模式"
+                            )
+                        }
+                    },
+                    onBroadcastResendForDebugChange = { enabled ->
+                        if (enabled != state.broadcastResendForDebug) {
+                            ServerHostStore.setBroadcastResendForDebug(enabled)
+                            ServerHostStore.appendLog(
+                                if (enabled) "Meshtastic resend 改用 broadcast 測試"
+                                else "Meshtastic resend 恢復 directed 模式"
+                            )
                         }
                     },
                 )
@@ -581,11 +614,20 @@ private fun ActionRow(
     context: Context,
     active: Boolean,
     hopLimit: Int,
+    transportProfile: TransportProfile,
+    responseChunkSize: Int,
+    responseChunkDelayMs: Long,
+    broadcastResponsesForDebug: Boolean,
+    broadcastResendForDebug: Boolean,
     locked: Boolean,
     onLock: () -> Unit,
     onHopLimitChange: (Int) -> Unit,
+    onTransportProfileChange: (TransportProfile) -> Unit,
+    onBroadcastResponsesForDebugChange: (Boolean) -> Unit,
+    onBroadcastResendForDebugChange: (Boolean) -> Unit,
 ) {
     var hopMenuExpanded by remember(hopLimit) { mutableStateOf(false) }
+    var profileMenuExpanded by remember(transportProfile) { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -637,6 +679,56 @@ private fun ActionRow(
                             onClick = {
                                 onHopLimitChange(option)
                                 hopMenuExpanded = false
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            AssistChip(
+                onClick = { onBroadcastResponsesForDebugChange(!broadcastResponsesForDebug) },
+                label = {
+                    Text(if (broadcastResponsesForDebug) "Response 廣播測試: 開" else "Response 廣播測試: 關")
+                },
+            )
+            AssistChip(
+                onClick = { onBroadcastResendForDebugChange(!broadcastResendForDebug) },
+                label = {
+                    Text(if (broadcastResendForDebug) "Resend 廣播測試: 開" else "Resend 廣播測試: 關")
+                },
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            AssistChip(
+                onClick = {},
+                label = { Text("Chunk ${responseChunkSize} / ${responseChunkDelayMs}ms") },
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(modifier = Modifier.width(220.dp)) {
+                OutlinedTextField(
+                    value = transportProfile.name,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Transport Profile") },
+                    trailingIcon = {
+                        IconButton(onClick = { profileMenuExpanded = true }) {
+                            Icon(Icons.Default.ArrowDropDown, null)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                DropdownMenu(
+                    expanded = profileMenuExpanded,
+                    onDismissRequest = { profileMenuExpanded = false },
+                ) {
+                    TransportProfile.entries.forEach { profile ->
+                        DropdownMenuItem(
+                            text = { Text("${profile.name} ${profile.responseChunkSize}/${profile.responseChunkDelayMs}ms") },
+                            onClick = {
+                                onTransportProfileChange(profile)
+                                profileMenuExpanded = false
                             },
                         )
                     }
