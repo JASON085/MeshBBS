@@ -16,12 +16,19 @@
 
 ## 📱 關於 MeshBBS
 
-MeshBBS 是以 **Meshtastic / LoRa Mesh 網路**為基礎的去中心化 Android BBS 應用程式。
+📡 MeshBBS 是什麼？
 
-即使沒有傳統網際網路，也能透過 Mesh 網路進行節點間的資訊交換與 BBS 資料同步。
+MeshBBS 是一款以 Meshtastic LoRa Mesh 網路為基礎打造的去中心化離線 BBS 通訊 App。即使在沒有行動網路、Wi-Fi 或基地台的環境下，只要附近有 Meshtastic 節點，就能透過 LoRa Mesh 交換文章與資料。
 
-本 Repository 為 **MeshBBS 官方 Binary Distribution Repository**。
+MeshBBS 支援 看板、文章發布、節點間自動資料同步、斷線續傳、資料完整性驗證、個人身分與數位簽章，並針對 LoRa 低頻寬環境設計 Adaptive Sync、資料壓縮、分段傳輸與遺失資料修復機制，讓短暫接觸的節點也能盡可能快速、穩定地完成同步。
 
+所有資料主要保存在使用者自己的裝置中，不依賴中央伺服器。節點再次相遇時，MeshBBS 會自動比對彼此缺少的資料並進行差異同步，逐步讓訊息隨著人員與節點移動，在 Mesh 網路中擴散。
+
+適合使用於 登山、露營、戶外活動、災害備援、無網路地區、社群 Mesh 網路，以及任何希望在傳統網際網路之外建立獨立通訊管道的情境。
+
+No Internet. No Server. Just Mesh.
+
+沒有網路，也能讓訊息繼續傳下去。
 ---
 
 ## 📥 Download
