@@ -1,38 +1,86 @@
-# MeshBBS
+<p align="center">
+  <img src="assets/app-logo.png" width="200" alt="MeshBBS Logo">
+</p>
 
-MeshBBS 是以 Meshtastic / LoRa Mesh 網路為基礎的去中心化 Android BBS 應用程式。
+<h1 align="center">MeshBBS</h1>
 
-本 Repository 為 **MeshBBS 官方 APK 發佈與自動更新來源**。
+<p align="center">
+  <b>Meshtastic / LoRa Mesh 去中心化 Android BBS</b>
+</p>
 
-## Download
-
-正式版本請由本 Repository 的 **Releases** 頁面下載。
-
-最新版本：
-
-https://github.com/JASON085/MeshBBS/releases/latest
-
-## Automatic Updates
-
-MeshBBS 支援透過 GitHub Releases 自動檢查及下載官方新版 APK。
-
-更新檔案會經過版本、雜湊值與 APK 簽章驗證後才進行安裝。
-
-## Source Code
-
-MeshBBS 為 proprietary software。
-
-本 Repository **不公開原始碼**，亦不包含 Android Studio Project、Kotlin / Java 原始碼或其他開發用檔案。
-
-公開內容僅供 MeshBBS 官方程式發佈、版本資訊與應用程式自動更新使用。
-
-## Security
-
-請只從本 Repository 的官方 Releases 下載 MeshBBS APK。
-
-請勿安裝來源不明或經第三方修改的 APK。
+<p align="center">
+  官方 APK 發佈與安全自動更新來源
+</p>
 
 ---
 
-Copyright © 2026 JASON085.  
-All Rights Reserved.
+## 📱 關於 MeshBBS
+
+MeshBBS 是以 **Meshtastic / LoRa Mesh 網路**為基礎的去中心化 Android BBS 應用程式。
+
+即使沒有傳統網際網路，也能透過 Mesh 網路進行節點間的資訊交換與 BBS 資料同步。
+
+本 Repository 為 **MeshBBS 官方 Binary Distribution Repository**。
+
+---
+
+## 📥 Download
+
+正式版本請由 GitHub Releases 下載：
+
+**https://github.com/JASON085/MeshBBS/releases/latest**
+
+請只安裝由此官方 Repository 發佈的 APK。
+
+---
+
+## 🔄 Automatic Updates
+
+MeshBBS 支援透過官方 GitHub Releases：
+
+- 自動檢查新版
+- 下載官方 APK
+- 版本驗證
+- SHA-256 完整性驗證
+- Release Manifest 數位簽章驗證
+- APK 身分與簽章驗證
+
+驗證完成後才會交由 Android 系統進行更新。
+
+---
+
+## 🔐 Security
+
+官方發佈來源：
+
+**https://github.com/JASON085/MeshBBS**
+
+第三方修改、重新封裝或重新散布的 APK 不屬於官方 MeshBBS 發佈版本。
+
+---
+
+## 🔒 Source Code
+
+MeshBBS 為 proprietary software。
+
+本 Repository **不公開程式原始碼**，亦不包含：
+
+- Kotlin / Java Source
+- Android Studio Project
+- Build Scripts
+- Development Tools
+- Private Development Documents
+
+本 Repository 僅用於正式程式發佈與自動更新。
+
+---
+
+<p align="center">
+  <b>MeshBBS</b><br>
+  Decentralized communication over Meshtastic / LoRa Mesh
+</p>
+
+<p align="center">
+  Copyright © 2026 JASON085.<br>
+  All Rights Reserved.
+</p>
