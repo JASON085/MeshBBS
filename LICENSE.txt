@@ -1,0 +1,18 @@
+MeshBBS Proprietary Software License
+
+Copyright © 2026 JASON085.
+All Rights Reserved.
+
+MeshBBS is proprietary software.
+
+Permission is granted to download, install, and use official compiled
+versions of MeshBBS distributed by the copyright holder for personal use.
+
+No permission is granted to copy, modify, reverse engineer, decompile,
+redistribute, sublicense, sell, or create derivative works from MeshBBS,
+except where such restriction is prohibited by applicable law.
+
+The source code of MeshBBS is not provided under this license.
+
+Official releases are distributed through:
+https://github.com/JASON085/MeshBBS
